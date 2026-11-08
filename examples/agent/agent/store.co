@@ -1,0 +1,48 @@
+--- The shop's database: the orders the agent reads and refunds, and the
+--- traces — a row per run, a row per step of it. The tables are made
+--- here, and the orders are seeded the same at every start and before
+--- every test, so a run reads the rows the recorded fixtures were made
+--- over.
+use db
+
+book = db.connect['sqlite://agent.db']
+
+--- a connection of the shop's own, for a tool or a helper: a function
+--- sees no top-level name, so what the model's tools read, they open
+fn shop[]
+    return db.connect['sqlite://agent.db']
+
+--- the tables made, and the five orders seeded as they always are — a
+--- refund made by an earlier run is undone, so every run and every test
+--- starts from the same orders
+fn setup[c]
+    query[c, 'CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, customer TEXT NOT NULL, item TEXT NOT NULL, amount REAL NOT NULL, status TEXT NOT NULL)']
+    query[c, 'CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY, at TEXT NOT NULL, question TEXT NOT NULL, model TEXT NOT NULL, answer TEXT NOT NULL, stop TEXT NOT NULL, rounds INTEGER NOT NULL, input INTEGER NOT NULL, output INTEGER NOT NULL, ms REAL NOT NULL)']
+    query[c, 'CREATE TABLE IF NOT EXISTS steps (run INTEGER NOT NULL, step INTEGER NOT NULL, what TEXT NOT NULL, name TEXT NOT NULL, input INTEGER NOT NULL, output INTEGER NOT NULL, ms REAL NOT NULL, how TEXT NOT NULL)']
+    query[c, 'INSERT OR REPLACE INTO orders (id, customer, item, amount, status) VALUES (1, \'Ada\', \'a kettle\', 40.0, \'placed\')']
+    query[c, 'INSERT OR REPLACE INTO orders (id, customer, item, amount, status) VALUES (2, \'Bob\', \'a lamp\', 65.0, \'shipped\')']
+    query[c, 'INSERT OR REPLACE INTO orders (id, customer, item, amount, status) VALUES (3, \'Ada\', \'a desk\', 250.0, \'placed\')']
+    query[c, 'INSERT OR REPLACE INTO orders (id, customer, item, amount, status) VALUES (4, \'Cy\', \'headphones\', 80.0, \'delivered\')']
+    query[c, 'INSERT OR REPLACE INTO orders (id, customer, item, amount, status) VALUES (5, \'Bob\', \'a chair\', 120.0, \'placed\')']
+
+--- the orders, read whole and in order: five rows a tool picks from in
+--- Crow. (A recording keeps a statement's first answer for every later
+--- read of it, whatever its parameters — crow-check.md — so a tool that
+--- asked `WHERE id = ?` would be told one order's row for every id; read
+--- whole, the recording and the replay see the same rows.)
+fn orders[c]
+    return query[c, 'SELECT id, customer, item, amount, status FROM orders ORDER BY id']
+
+--- the tables are made and the orders seeded; seeding again undoes a
+--- refund
+test the_orders_are_seeded_the_same_every_time[]
+    setup[book]
+    found = orders[book]
+    assert[len[found] eq 5]
+    assert[found.customer[0] eq 'Ada']
+    assert[found.status[1] eq 'shipped']
+    assert[found.amount[2] eq 250.0]
+    query[book, 'UPDATE orders SET status = ? WHERE id = 1', ['refunded']]
+    assert[orders[book].status[0] eq 'refunded']
+    setup[book]
+    assert[orders[book].status[0] eq 'placed']

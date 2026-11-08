@@ -1,0 +1,11 @@
+view chat_page_turn_view (chat/page.co)
+  composed on: page /
+  always:
+    stack[gap = 'm']
+      h2[] $1.question
+      p[] $1.answer
+      details[]
+        summary[] 'the notes it read'
+        stack[gap = 'm']
+          for each[range[len[$1.found]]]
+            @chat_page_note_view[(each[range[len[$1.found]]] + 1), $1.found[each[range[len[$1.found]]]]]

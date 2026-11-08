@@ -1,0 +1,36 @@
+--- A subagent is a tool that runs the loop (llm's REFERENCE.md: A
+--- subagent is a tool that runs the loop): `research` is a function the
+--- parent model calls, whose body runs an inner `act` with a tool list of
+--- its own and answers the inner run's text — a run that failed fails the
+--- tool, and the parent hears a failed result that says why. The loop is
+--- copied per tool list: the inner copy is reached through the outer
+--- copy's dispatch of `research` by name, `research` is typed by its body
+--- (`trim[question]` reads the question as text; `llm.ask[…]` takes any
+--- value and types nothing) and by the direct call a test of it makes,
+--- and `weather` is a member of both lists. The model answers nobody, so
+--- both modes agree on the errors — the parent's, and the inner run's
+--- through the tool — and the compiled program builds, which is the test.
+--- (tests/model.py runs a delegating agent against a server that scripts
+--- the calls, in both modes.)
+use llm
+
+--- the current weather in a city
+fn weather[city]
+    return 'sunny in `upper[city]`'
+
+--- what a smaller agent finds out about a question, with the weather as
+--- its only tool: its answer, or its run's failure
+fn research[question]
+    m = llm.reach['openai://127.0.0.1:9/self-model']
+    inner = llm.act[m, llm.ask[trim[question]], tools = [weather], rounds = 4]
+    return inner.text
+
+m = llm.reach['openai://127.0.0.1:9/self-model']
+done = llm.act[m, llm.ask['Is it warmer in Lisbon or Porto?'], tools = [research, weather]]
+log[done.ok]
+log[done.kind]
+log[starts[done.reason, 'cannot reach the model']]
+found = research['How warm is it in Lisbon?']
+log[found.ok]
+log[found.kind]
+log[starts[found.reason, 'cannot reach the model']]

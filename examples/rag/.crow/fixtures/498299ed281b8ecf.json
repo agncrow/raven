@@ -1,0 +1,16 @@
+{
+  "body": "{\"model\": \"llama3.2\", \"max_tokens\": 300, \"temperature\": 1, \"messages\": [{\"role\": \"system\", \"content\": \"Answer from the notes below and nothing else. Cite each note you use as [n]. If the notes do not answer, say so.\\n\\n[1] (derivations.md) A write reaches every reader. When a handler writes a table, every session whose page read a derivation over that table renders again, so a reader sees another reader's change as it lands.\\n\\n[2] (pages.md) A view is a function that answers elements: a stack of headings, paragraphs, fields and buttons. A field is bound to a fact, and a button names the handler its click runs.\\n\\n[3] (derivations.md) A derivation over an external source stays fresh by its window: `fresh = 300` recomputes it at most every five minutes, and the default of zero means as fresh as the loop, recomputed every render.\"}, {\"role\": \"user\", \"content\": \"how does a derivation stay fresh\"}]}",
+  "kind": "request",
+  "method": "POST",
+  "reply": {
+    "body": "{\"id\": \"stand-in-1\", \"object\": \"chat.completion\", \"model\": \"llama3.2\", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": \"From the notes: A write reaches every reader. [1] A view is a function that answers elements: a stack of headings, paragraphs, fields and buttons. [2]\"}, \"finish_reason\": \"stop\"}], \"usage\": {\"prompt_tokens\": 135, \"completion_tokens\": 26}}",
+    "headers": {
+      "content-length": "379",
+      "content-type": "application/json",
+      "date": "Mon, 12 Oct 2026 06:55:15 GMT",
+      "server": "BaseHTTP/0.6 Python/3.9.6"
+    },
+    "status": 200
+  },
+  "url": "http://127.0.0.1:11434/v1/chat/completions"
+}

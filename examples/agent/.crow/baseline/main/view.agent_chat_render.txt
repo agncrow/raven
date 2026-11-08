@@ -1,0 +1,12 @@
+view agent_chat_render (agent/chat.co)
+  composed on: page /
+  reads: agent_chat_answer, agent_chat_called, agent_chat_question, agent_trace_run_id, agent_trace_steps
+  always:
+    stack[gap = 'l', pad = 'l']
+      h1[] 'Support'
+      row[align = 'end', gap = 'm']
+        field[binds agent_chat_question, type = 'text'] 'Question'
+        button[class = 'primary', click → agent_chat_ask_agent] 'Ask'
+      @agent_chat_answer_view[]
+      @agent_trace_steps_view[]
+      a[href = '/runs'] 'every run'

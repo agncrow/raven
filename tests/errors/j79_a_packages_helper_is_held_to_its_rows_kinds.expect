@@ -1,0 +1,3 @@
+j79_a_packages_helper_is_held_to_its_rows_kinds.co:11:1: in llm.chat: len[] takes a list, text, a map, numbers, a frame or bytes, got an int
+  11 │ r = llm.chat[m, talk, system = 5]
+     │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

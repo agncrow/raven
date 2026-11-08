@@ -1,0 +1,5 @@
+handler agent_trace_open_run (agent/trace.co)
+  inputs: $1
+  wired: agent_trace_runs_view table action 'Open'
+  always:
+    agent_trace_run_id := $1

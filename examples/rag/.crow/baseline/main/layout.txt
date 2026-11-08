@@ -1,0 +1,4 @@
+layout / (chat_page_render)
+  always:
+    1280: 784 high
+    390: 784 high

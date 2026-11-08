@@ -1,0 +1,3 @@
+j46_a_tool_nothing_types.co:9:1: in llm.chat: echo's parameter 'x' is typed by nothing — read it in the body, or call echo[…] once with a value of its kind
+  9 │ r = llm.chat[m, llm.ask['hi'], tools = [echo]]
+    │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

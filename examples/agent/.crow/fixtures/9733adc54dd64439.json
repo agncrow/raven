@@ -1,0 +1,35 @@
+{
+  "answered": 0,
+  "columns": [
+    [
+      "step",
+      "str"
+    ],
+    [
+      "what",
+      "str"
+    ],
+    [
+      "name",
+      "str"
+    ],
+    [
+      "input",
+      "str"
+    ],
+    [
+      "output",
+      "str"
+    ],
+    [
+      "ms",
+      "str"
+    ],
+    [
+      "how",
+      "str"
+    ]
+  ],
+  "rows": [],
+  "sql": "SELECT step, what, name, input, output, ms, how FROM steps WHERE run = ? ORDER BY step"
+}

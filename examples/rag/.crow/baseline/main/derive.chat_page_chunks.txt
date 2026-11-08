@@ -1,0 +1,3 @@
+derive chat_page_chunks (chat/page.co)
+  reads: nothing
+  read by: chat_page_ask_model, chat_page_embedded, chat_page_lexical

@@ -1,0 +1,37 @@
+--- The notes: every .md file under docs/, cut into chunks at blank lines
+--- (a heading on its own is none), each chunk its file and its number —
+--- and the model that embeds them. The page holds the derivations over
+--- these (chat/page.co): the chunks, their index and their BM25 ranking.
+use web, llm
+
+struct Chunk [file, n, body]
+
+--- the model that embeds, named by the environment (Ollama's by default)
+fn embedder[]
+    return llm.reach[env['RAG_EMBEDDER', 'openai://127.0.0.1:11434/nomic-embed-text']]
+
+--- the notes cut into chunks, in the files' order, numbered within each
+--- file
+fn chunks_of[]
+    found = []
+    for name in ls['docs']
+        if ends[name, '.md']
+            whole = read['docs/`name`']
+            n = 0
+            for piece in split[whole, '\n\n']
+                p = trim[piece]
+                if len[p] gt 0 and not starts[p, '#']
+                    n = n + 1
+                    found = push[found, Chunk[name, n, p]]
+    return found
+
+--- the notes are cut into chunks in the files' order, numbered within
+--- each file, headings left out
+test the_notes_are_cut_into_chunks[]
+    found = chunks_of[]
+    len[found] gt 10
+    found[0].file eq 'derivations.md'
+    found[0].n eq 1
+    starts[found[0].body, 'A derivation is a value']
+    found[4].file eq 'fixtures.md'
+    found[4].n eq 1

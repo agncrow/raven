@@ -1,0 +1,4 @@
+--- a package's helper is its own: a program naming it is told so, and to call what the package exports
+use llm
+
+log[llm._talk_of[llm.ask['x']]]

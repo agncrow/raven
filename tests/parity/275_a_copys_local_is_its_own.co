@@ -1,0 +1,25 @@
+--- A function copied per signature is scanned in its own scope, as the
+--- function itself is: its first assignment to a name is a local of its
+--- own, and inside a package's copy the program's names are invisible.
+--- The copy of llm's `act` made for the second tool list had read the
+--- program's `one` — the record the first call answered — as the loop's
+--- own local `one` (a schema's text), and refused the package's own push
+--- onto its list in both modes. (The model's address answers nobody: each
+--- call's failure is the same value in both modes.)
+use llm
+
+--- the current weather in a city
+fn weather[city]
+    return 'sunny in `upper[city]`'
+
+--- the population of a city, in millions
+fn population[city]
+    return '`upper[city]`: 0.5 million'
+
+m = llm.reach['openai://127.0.0.1:9/self-model']
+one = llm.act[m, llm.ask['How warm is it in Lisbon?'], tools = [weather]]
+two = llm.act[m, llm.ask['Which is larger, Lisbon or Porto?'], tools = [weather, population]]
+log[one.ok]
+log[one.kind]
+log[two.ok]
+log[starts[two.reason, 'cannot reach the model']]

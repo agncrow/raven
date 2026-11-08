@@ -1,0 +1,10 @@
+--- a tool's parameter its body reads as nothing (only shown in text): no kind for the model
+use llm
+
+--- says its argument back
+fn echo[x]
+    return 'echo `x`'
+
+m = llm.reach['openai://127.0.0.1:9/self-model']
+r = llm.chat[m, llm.ask['hi'], tools = [echo]]
+log[r.ok]

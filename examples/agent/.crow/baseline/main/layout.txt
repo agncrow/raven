@@ -1,0 +1,4 @@
+layout / (agent_chat_render)
+  always:
+    1280: 573 high
+    390: 573 high

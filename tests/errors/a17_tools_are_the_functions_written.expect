@@ -1,0 +1,3 @@
+a17_tools_are_the_functions_written.co:9:1: in llm.chat: describe[] takes a function written, or one of a list of functions, got text
+  9 │ r = llm.chat[m, llm.ask['How warm is Lisbon?'], tools = ['weather']]
+    │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

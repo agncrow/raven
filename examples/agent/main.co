@@ -1,0 +1,17 @@
+--- A support agent over a shop's orders — raven's agent example
+--- (docs/agents-design.md, Traces, evals and a page). The model runs three
+--- tools over a SQLite database of orders, the refund behind the program's
+--- gate; every run's steps are written to the database as its trace, and
+--- a page shows the runs, their steps, their tokens and their latency. The
+--- tests replay what a recording kept (crow test --fixtures), a model
+--- grading the answers among them.
+use web, ui
+use agent.store
+use agent.chat
+use agent.trace
+
+store.setup[store.book]
+
+serve[3530]
+page['/', chat.render]
+page['/runs', trace.render]

@@ -1,0 +1,5 @@
+reach chat/page.co
+  files: ls, read
+  network: request
+  process: env
+  session: notice

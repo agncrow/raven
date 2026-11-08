@@ -1,0 +1,22 @@
+# what crow builds and keeps beside a program
+.crow_build/
+target/
+# what a program run here writes: its logs, its data, its databases
+*.csv
+*.txt
+*.json
+*.db
+# a program's record is kept: the fixtures its tests answer from and its
+# accepted baseline (what each checked program does, derived by `crow
+# check`); the book `crow book` derives on every start and the pid files
+# `crow run` keeps while it serves are not
+!**/.crow/fixtures/*.json
+!**/.crow/baseline/
+!**/.crow/baseline/**
+**/.crow/book/
+**/.crow/*.pid
+# the OS and editors
+.DS_Store
+*.swp
+*~
+__pycache__/

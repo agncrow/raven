@@ -1,0 +1,4 @@
+scenario chat_page_an_empty_question_asks_nothing (chat/page.co)
+  ran to its end
+  changed:
+    question =    

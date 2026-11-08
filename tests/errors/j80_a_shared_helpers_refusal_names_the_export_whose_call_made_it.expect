@@ -1,0 +1,7 @@
+j80_a_shared_helpers_refusal_names_the_export_whose_call_made_it.co:16:1: in llm.act: len[] takes a list, text, a map, numbers, a frame or bytes, got an int
+  16 │ bad = llm.act[m, talk, system = 5]
+     │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+j80_a_shared_helpers_refusal_names_the_export_whose_call_made_it.co:16:24: in llm.act: cannot reassign 'system' from int to result[str] — variable type cannot change
+  16 │ bad = llm.act[m, talk, system = 5]
+     │                        ^^^^^^
+2 mistakes

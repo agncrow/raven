@@ -1,0 +1,19 @@
+{
+  "body": "{\"model\": \"mlx-community/Ministral-3-8B-Reasoning-2512-4bit\", \"max_tokens\": 1024, \"temperature\": 0, \"messages\": [{\"role\": \"system\", \"content\": \"You are the support agent of a small shop. Answer questions about orders with the tools: order_status for one order by its number, search_orders for a customer's orders, refund to refund an order. Call a tool once, then answer in one or two plain sentences, naming the order and its status. When a refund is refused, say so and why, and do not try again.\"}, {\"role\": \"user\", \"content\": \"What is the status of order 2?\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"order_status\", \"description\": \"the status of an order, by its number: what was ordered, by whom, for how much, and whether it is placed, shipped, delivered or refunded\", \"parameters\": {\"properties\":{\"number\":{\"type\":\"string\"}},\"required\":[\"number\"],\"type\":\"object\"}}}, {\"type\": \"function\", \"function\": {\"name\": \"search_orders\", \"description\": \"the orders of a customer, by name: each order's number, item, amount and status\", \"parameters\": {\"properties\":{\"customer\":{\"type\":\"string\"}},\"required\":[\"customer\"],\"type\":\"object\"}}}, {\"type\": \"function\", \"function\": {\"name\": \"refund\", \"description\": \"refund an order by its number: the money goes back to the customer and the order's status becomes refunded\", \"parameters\": {\"properties\":{\"number\":{\"type\":\"string\"}},\"required\":[\"number\"],\"type\":\"object\"}}}]}",
+  "kind": "request",
+  "method": "POST",
+  "reply": {
+    "body": "{\"id\": \"chatcmpl-45b30a7b-daf5-46cd-8c09-01e857eaa9d3\", \"system_fingerprint\": \"0.32.2-0.32.2-macOS-26.5-arm64-arm-64bit-applegpu_g16s\", \"object\": \"chat.completion\", \"model\": \"mlx-community/Ministral-3-8B-Reasoning-2512-4bit\", \"created\": 1792557101, \"choices\": [{\"index\": 0, \"finish_reason\": \"tool_calls\", \"message\": {\"role\": \"assistant\", \"content\": null, \"tool_calls\": [{\"function\": {\"name\": \"order_status\", \"arguments\": \"{\\\"number\\\": \\\"2\\\"}\"}, \"type\": \"function\", \"id\": \"04790ee4-644f-49ce-a10a-166030b00e0a\"}]}}], \"usage\": {\"prompt_tokens\": 321, \"completion_tokens\": 11, \"total_tokens\": 332, \"prompt_tokens_details\": {\"cached_tokens\": 320}}}",
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "*",
+      "access-control-allow-origin": "*",
+      "content-length": "643",
+      "content-type": "application/json",
+      "date": "Wed, 21 Oct 2026 04:31:41 GMT",
+      "server": "BaseHTTP/0.6 Python/3.12.12"
+    },
+    "status": 200
+  },
+  "url": "http://127.0.0.1:8765/v1/chat/completions"
+}

@@ -1,0 +1,3 @@
+reach chat/corpus.co
+  files: ls, read
+  process: env

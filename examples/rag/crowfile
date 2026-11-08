@@ -1,0 +1,2 @@
+name = 'rag'
+deps = map[llm = '../../packages/llm', mcp = '../../packages/mcp', vectors = '../../../pie/packages/vectors', retrieval = '../../../pie/packages/retrieval']

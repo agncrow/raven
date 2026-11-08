@@ -1,0 +1,9 @@
+view agent_trace_charts_view (agent/trace.co)
+  composed on: page /runs
+  reads: agent_trace_spent
+  when (len[agent_trace_spent] eq 0):
+    p[color = 'muted'] 'no runs yet'
+  when (not (len[agent_trace_spent] eq 0)):
+    row[gap = 'm']
+      chart[] agent_trace_spent 'at' [] ['input', 'output'] '' 0 'UTC' 200 [] 0 0 0
+      chart[] agent_trace_spent 'at' [] ['ms'] '' 0 'UTC' 200 [] 0 0 0

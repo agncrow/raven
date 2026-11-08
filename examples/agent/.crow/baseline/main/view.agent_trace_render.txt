@@ -1,0 +1,10 @@
+view agent_trace_render (agent/trace.co)
+  composed on: page /runs
+  reads: agent_trace_run_id, agent_trace_runs, agent_trace_spent, agent_trace_steps
+  always:
+    stack[gap = 'l', pad = 'l']
+      h1[] 'Agent runs'
+      @agent_trace_charts_view[]
+      @agent_trace_runs_view[]
+      @agent_trace_steps_view[]
+      a[href = '/'] 'ask the agent'

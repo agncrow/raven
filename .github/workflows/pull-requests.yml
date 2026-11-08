@@ -1,0 +1,24 @@
+# Raven takes no pull requests during the alpha (CONTRIBUTING.md): each one
+# is closed at once with the note, so nobody waits on it. Nothing of the
+# pull request is checked out or run.
+name: Pull requests
+on:
+  pull_request_target:
+    types: [opened]
+permissions:
+  pull-requests: write
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          NOTE: >-
+            Thank you for the pull request. Raven takes no pull requests
+            during the alpha: its packages still change with Crow's
+            releases, and every line is kept under one hand so that the
+            licence can still change (CONTRIBUTING.md). A bug report with
+            the program that shows it, or a question, is welcome in Issues.
+        run: gh pr close "$PR" --repo "$REPO" --comment "$NOTE"

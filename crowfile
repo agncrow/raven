@@ -1,0 +1,5 @@
+--- The repository's root: the parity programs and the examples reach the
+--- packages through crow_modules links, as a program that installs them
+--- does.
+name = 'raven_repository'
+deps = map[llm = 'packages/llm', mcp = 'packages/mcp']

@@ -1,0 +1,35 @@
+--- The agent loop (llm's REFERENCE.md: The loop is the package's) is held
+--- to its limits before any model is asked, and a model nobody answers is
+--- its error value, as chat's: the same value in both modes. A tool's
+--- result told as a failure carries the flag in the turn, and the
+--- conversation the loop would send is the one `told` builds.
+--- (tests/model.py runs the loop against a server that scripts multi-step
+--- runs, in both modes.)
+use llm
+
+--- the current weather in a city
+fn weather[city]
+    return 'sunny in `upper[city]`'
+
+m = llm.reach['openai://127.0.0.1:9/self-model']
+none = llm.act[m, llm.ask['How warm is it in Lisbon?'], tools = [weather], rounds = 0]
+log[none.ok]
+log[none.kind]
+log[none.reason]
+gone = llm.act[m, llm.ask['How warm is it in Lisbon?'], tools = [weather]]
+log[gone.ok]
+log[gone.kind]
+log[starts[gone.reason, 'cannot reach the model']]
+untalked = llm.act[m, json['{"a": 1}'], tools = [weather]]
+log[untalked.reason]
+
+r = json['{"text": "", "calls": [{"id": "c1", "name": "weather", "args": {"city": "Nowhere"}}], "usage": {"input": 3, "output": 4}, "stop": "tool"}']
+talk = llm.said[llm.ask['hi'], r]
+failed = llm.told[talk, r.calls[0], 'no station in Nowhere', failed = true]
+log[len[failed]]
+log[failed[2].role]
+log[failed[2].id]
+log[failed[2].text]
+log[failed[2].failed]
+fine = llm.told[talk, r.calls[0], 'sunny in LISBON']
+log[fine[2].failed.ok]

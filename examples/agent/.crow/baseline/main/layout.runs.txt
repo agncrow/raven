@@ -1,0 +1,4 @@
+layout /runs (agent_trace_render)
+  always:
+    1280: 994 high, past the width: chart 'chart' by 534
+    390: 994 high, past the width: chart 'chart' by 274

@@ -1,0 +1,5 @@
+states / (chat_page_render)
+  facts: chat_page_question ∈ {'', *}
+  first: chat_page_question = ''
+  button 'Ask' → chat_page_ask_model: always
+  field 'Question' binds chat_page_question: always

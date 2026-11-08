@@ -1,0 +1,19 @@
+{
+  "body": "{\"model\": \"mlx-community/Ministral-3-8B-Reasoning-2512-4bit\", \"max_tokens\": 400, \"temperature\": 0, \"messages\": [{\"role\": \"system\", \"content\": \"You grade a support agent's answers against a rubric, strictly. Reply with PASS or FAIL on the first line, then one sentence why.\"}, {\"role\": \"user\", \"content\": \"Question: Which orders does Ada have?\\nAnswer: Ada has two orders:\\n- Order 1: a kettle for 40.00, placed.\\n- Order 3: a desk for 250.00, placed.\\nRubric: The answer names two orders of Ada: a kettle and a desk.\\n\\nDoes the answer meet the rubric? Reply with PASS or FAIL on the first line, then one sentence why.\"}]}",
+  "kind": "request",
+  "method": "POST",
+  "reply": {
+    "body": "{\"id\": \"chatcmpl-4afcba22-1c7d-4599-8e7a-7fba6e769fec\", \"system_fingerprint\": \"0.32.2-0.32.2-macOS-26.5-arm64-arm-64bit-applegpu_g16s\", \"object\": \"chat.completion\", \"model\": \"mlx-community/Ministral-3-8B-Reasoning-2512-4bit\", \"created\": 1792557110, \"choices\": [{\"index\": 0, \"finish_reason\": \"stop\", \"message\": {\"role\": \"assistant\", \"content\": \"PASS\\nThe answer correctly names two orders of Ada: a kettle and a desk, as required by the rubric.\"}}], \"usage\": {\"prompt_tokens\": 131, \"completion_tokens\": 27, \"total_tokens\": 158, \"prompt_tokens_details\": {\"cached_tokens\": 130}}}",
+    "headers": {
+      "access-control-allow-headers": "*",
+      "access-control-allow-methods": "*",
+      "access-control-allow-origin": "*",
+      "content-length": "576",
+      "content-type": "application/json",
+      "date": "Wed, 21 Oct 2026 04:31:50 GMT",
+      "server": "BaseHTTP/0.6 Python/3.12.12"
+    },
+    "status": 200
+  },
+  "url": "http://127.0.0.1:8765/v1/chat/completions"
+}

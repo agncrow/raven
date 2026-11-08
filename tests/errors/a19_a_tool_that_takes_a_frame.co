@@ -1,0 +1,14 @@
+--- a tool takes what a model can hand it: a function whose parameter is a
+--- frame cannot be described to one — llm answers an error of kind llm,
+--- which a line that drops it stops on, in both modes
+use frame
+use llm
+
+--- the rows of the table that match
+fn rows[table]
+    return len[table]
+
+m = llm.reach['openai://127.0.0.1:1/llama3.2']
+df = frame.new[n = [1, 2]]
+log[rows[df]]
+llm.chat[m, llm.ask['How many?'], tools = [rows]]

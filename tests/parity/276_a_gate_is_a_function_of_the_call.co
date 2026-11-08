@@ -1,0 +1,34 @@
+--- A parameter read by its fields, and typed by nothing else, is a parsed
+--- value (llm's REFERENCE.md, Tools are the functions): the program's
+--- gate for the agent loop is a function of the call that nothing calls
+--- directly, and its body's `call.name` and `call.args.city` type it, so
+--- the loop can apply it by name in both modes. A gate that is none — a
+--- tool handed where a gate is taken — is refused with why before any
+--- model is asked, and the loop against a model nobody answers is its
+--- error, in both modes. (tests/model.py runs a gated loop against a
+--- server that scripts the calls; a real model refused a city the gate
+--- did not allow and said so.)
+use llm
+
+--- the current weather in a city
+fn weather[city]
+    return 'sunny in `upper[city]`'
+
+--- the weather may be asked for Lisbon alone
+fn only_lisbon[call]
+    if str[call.name] ne 'weather'
+        return true
+    return str[call.args.city] eq 'Lisbon'
+
+--- nothing is allowed
+fn nothing[call]
+    return len[str[call.id]] lt 0
+
+m = llm.reach['openai://127.0.0.1:9/self-model']
+wrong = llm.act[m, llm.ask['How warm is it in Lisbon?'], tools = [weather], allow = [weather]]
+log[wrong.ok]
+log[wrong.reason]
+gone = llm.act[m, llm.ask['How warm is it in Lisbon?'], tools = [weather], allow = [only_lisbon, nothing]]
+log[gone.ok]
+log[gone.kind]
+log[starts[gone.reason, 'cannot reach the model']]

@@ -1,0 +1,17 @@
+--- A tool only handed to a model — never called by the program — is typed
+--- by what its body reads (llm's REFERENCE.md, Tools are the functions):
+--- `upper[x]` reads its parameter as text, and the schema the compiler
+--- writes says so. Only a call had typed one, and a tool read in its body
+--- was refused as typed by nothing, the refusal's own fix ("read it in
+--- the body") doing nothing. (The model's address answers nobody: the
+--- call's failure is the same value in both modes.)
+use llm
+
+--- says its argument back, louder
+fn shout[x]
+    return upper[x]
+
+m = llm.reach['openai://127.0.0.1:9/self-model']
+r = llm.chat[m, llm.ask['hi'], tools = [shout]]
+log[r.ok]
+log[r.kind]

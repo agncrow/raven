@@ -1,0 +1,4 @@
+derive agent_trace_steps (agent/trace.co)
+  reads: agent_trace_run_id
+  tables: steps
+  read by: agent_chat_render, agent_trace_render, agent_trace_steps_view

@@ -1,0 +1,1575 @@
+--- `use llm`: a language model as a connection, written in Crow on the
+--- sys layer — one way to ask a model over two wire formats, Anthropic's
+--- Messages API and the OpenAI-compatible chat completions that Ollama,
+--- vLLM, OpenRouter and LiteLLM serve too. A package, called qualified: a
+--- program calls `llm.reach`, `ask`, `asked`, `said`, `told`, `chat`,
+--- `follow`, `next`, `reply`, `embed` and `act`, each typed by its use; a
+--- name that begins with an underscore is the package's own. A
+--- conversation and a reply are parsed values in one shape both formats
+--- are written from; `chat` and `embed` send through `request`, and
+--- `follow` reads a reply piece by piece on a socket of its own, the
+--- chunked body decoded as it comes and the reply gathered so far kept in
+--- the connection's notes; `act` is the agent loop, the model's calls
+--- answered through the program's gate and the tools' own functions
+--- (`describe` and `apply`, sys). The tests are the package's own (`crow
+--- test packages/llm/main.co`), and tests/model.py drives the package
+--- against a server speaking both formats, in both modes. The design is
+--- docs/llm-design.md and, for the loop, docs/agents-design.md.
+use sys
+use math
+use frame
+use mcp
+
+--- the model's description, a parsed value: the provider, the model, the
+--- base the requests go to, the path the OpenAI-compatible endpoints hang
+--- off, and the NAME of the environment variable holding the key
+fn _described[provider, model, base, path, key]
+    return json['{"provider": `encode[provider]`, "model": `encode[model]`, "base": `encode[base]`, "path": `encode[path]`, "key": `encode[key]`}']
+
+--- a URL's query taken apart: the part before the `?`, and the pairs
+--- after it as a map
+fn _queried[url]
+    parts = split[url, '?']
+    pairs = map[]
+    if len[parts] gt 1
+        for pair in split[parts[1], '&']
+            kv = split[pair, '=']
+            if len[kv] eq 2 and len[kv[0]] gt 0
+                pairs = set[pairs, kv[0], kv[1]]
+    return pairs
+
+--- the part of a URL before its query
+fn _unqueried[url]
+    return split[url, '?'][0]
+
+--- whether a host is this machine: reached over http, with no key
+fn _local_host[host]
+    name = split[host, ':'][0]
+    return name eq 'localhost' or name eq '127.0.0.1' or name eq '::1'
+
+--- `reach[url]`: a model as a connection — `anthropic://<model>` or
+--- `openai://<host>[:port]/<model>`, the key's variable named by
+--- `?key=NAME` (else the provider's own; a local host sends it only where
+--- it is set), an OpenAI-compatible server's path by `&path=/api/v1` (else
+--- `/v1`)
+fn reach[url]
+    pairs = _queried[url]
+    plain = _unqueried[url]
+    if starts[plain, 'anthropic://']
+        model = slice[plain, 12, len[plain]]
+        if len[model] eq 0
+            return error['cannot reach \'`url`\': no model is named — anthropic://claude-sonnet-5-5', 'llm']
+        key = 'ANTHROPIC_API_KEY'
+        if 'key' in pairs
+            key = pairs['key']
+        present = env[key]
+        if not present.ok
+            return error['cannot reach \'`url`\': the key\'s variable `key` is not set', 'llm']
+        --- (ANTHROPIC_BASE_URL, as the official clients read it: a proxy, a
+        --- test's server)
+        return _described['anthropic', model, env['ANTHROPIC_BASE_URL', 'https://api.anthropic.com'], '/v1', key]
+    if starts[plain, 'openai://']
+        rest = slice[plain, 9, len[plain]]
+        at = split[rest, '/']
+        host = at[0]
+        model = join[slice[at, 1, len[at]], '/']
+        if len[host] eq 0 or len[model] eq 0
+            return error['cannot reach \'`url`\': a model is named after its host — openai://localhost:11434/llama3.2', 'llm']
+        path = '/v1'
+        if 'path' in pairs
+            path = pairs['path']
+        key = 'OPENAI_API_KEY'
+        if 'key' in pairs
+            key = pairs['key']
+        scheme = 'https'
+        if _local_host[host]
+            scheme = 'http'
+        else
+            present = env[key]
+            if not present.ok
+                return error['cannot reach \'`url`\': the key\'s variable `key` is not set', 'llm']
+        return _described['openai', model, '`scheme`://`host`', path, key]
+    return error['cannot reach \'`url`\': a model\'s URL is anthropic://<model> or openai://<host>/<model>', 'llm']
+
+--- a turn added to a conversation: the list's closing bracket opened and
+--- the turn written after the others
+fn _appended[talk, turn]
+    whole = encode[talk]
+    if len[whole] lte 2
+        return json['[`turn`]']
+    return json['`slice[whole, 0, len[whole] - 1]`, `turn`]']
+
+--- `ask[text]`: a conversation of one user turn
+fn ask[words]
+    return json['[{"role": "user", "text": `encode[words]`}]']
+
+--- a conversation as a program hands it — the parsed value `ask` answered,
+--- its turns added since; what is no list of turns is refused
+fn _talk_of[talk]
+    if type[talk] ne 'array'
+        return error['a conversation is what ask[…] answers, with its turns added by asked, said and told', 'llm']
+    return talk
+
+--- a model's description as a program hands it — what `reach` answered
+fn _model_of[m]
+    if type[m] ne 'map' or not m.provider.ok
+        return error['a model is what reach[…] answers', 'llm']
+    return m
+
+--- `asked[talk, text]`: the conversation with another user turn
+fn asked[talk, words]
+    turns = _talk_of[talk]
+    if not turns.ok
+        return error[turns.reason, 'llm']
+    return _appended[talk, '{"role": "user", "text": `encode[words]`}']
+
+--- `said[talk, message]`: the conversation with the model's reply added,
+--- its text and its tool calls
+fn said[talk, message]
+    turns = _talk_of[talk]
+    if not turns.ok
+        return error[turns.reason, 'llm']
+    if type[message] ne 'map' or not message.text.ok or not message.calls.ok
+        return error['a reply is what chat[…] and reply[…] answer', 'llm']
+    return _appended[talk, '{"role": "assistant", "text": `encode[str[message.text]]`, "calls": `encode[message.calls]`}']
+
+--- `told[talk, call, text, failed = false]`: the conversation with a
+--- tool's result added, answering the call by its id; `failed = true`
+--- marks the result a failure the model is to hear as one
+fn told[talk, call, words, failed = false]
+    turns = _talk_of[talk]
+    if not turns.ok
+        return error[turns.reason, 'llm']
+    if type[call] ne 'map' or not call.id.ok
+        return error['a call is one of a reply\'s calls', 'llm']
+    if failed
+        return _appended[talk, '{"role": "tool", "id": `encode[str[call.id]]`, "text": `encode[words]`, "failed": true}']
+    return _appended[talk, '{"role": "tool", "id": `encode[str[call.id]]`, "text": `encode[words]`}']
+
+--- a tool's schema as a model is told it, from the function's
+--- description (`describe`): its name, its doc comment, and its
+--- parameters as a JSON schema object, every one required; a kind a
+--- model cannot hand — a frame, a handle, a function — is an error
+fn _schema_of[d]
+    properties = []
+    required = []
+    for p in d.params
+        kind = _json_type[str[p.takes]]
+        if not kind.ok
+            return error['the parameter `str[p.name]` of `str[d.name]` takes `str[p.takes]`, which a model cannot hand it: a tool takes numbers, text, bools, lists, maps, records and parsed values', 'llm']
+        properties = push[properties, '`encode[str[p.name]]`: `kind`']
+        required = push[required, encode[str[p.name]]]
+    props = join[properties, ', ']
+    req = join[required, ', ']
+    return '{"name": `encode[str[d.name]]`, "description": `encode[str[d.doc]]`, "parameters": {"type": "object", "properties": {`props`}, "required": [`req`]}}'
+
+--- the JSON schema of a kind, by the word errors use for it: an int an
+--- integer, a number a number, text a string, a bool a boolean, a list an
+--- array of its items, numbers an array of numbers, a map or a record or
+--- a parsed value an object
+fn _json_type[word]
+    if word eq 'an int'
+        return '{"type": "integer"}'
+    if word eq 'a number' or word eq 'a decimal' or word eq 'a fraction'
+        return '{"type": "number"}'
+    if word eq 'text' or word eq 'a moment' or word eq 'markup' or word eq 'bytes'
+        return '{"type": "string"}'
+    if word eq 'a bool'
+        return '{"type": "boolean"}'
+    if word eq 'a JSON value' or word eq 'a map' or word eq 'a record' or word eq 'a value'
+        return '{"type": "object"}'
+    if word eq 'numbers' or word eq 'a list of numbers'
+        return '{"type": "array", "items": {"type": "number"}}'
+    if word eq 'a list of ints'
+        return '{"type": "array", "items": {"type": "integer"}}'
+    if word eq 'a list of text'
+        return '{"type": "array", "items": {"type": "string"}}'
+    if word eq 'a list of bools'
+        return '{"type": "array", "items": {"type": "boolean"}}'
+    if word eq 'a list' or word eq 'a list of records' or word eq 'a list of maps'
+        return '{"type": "array", "items": {"type": "object"}}'
+    return error['no schema for `word`', 'llm']
+
+--- a tool's schema (name, description, parameters) in Anthropic's form
+fn _tool_anthropic[schema]
+    j = json[schema]
+    described_as = ''
+    if j.description.ok and len[str[j.description]] gt 0
+        described_as = ', "description": `encode[str[j.description]]`'
+    return '{"name": `encode[str[j.name]]``described_as`, "input_schema": `encode[j.parameters]`}'
+
+--- the same schema in OpenAI's form
+fn _tool_openai[schema]
+    j = json[schema]
+    described_as = ''
+    if j.description.ok and len[str[j.description]] gt 0
+        described_as = ', "description": `encode[str[j.description]]`'
+    return '{"type": "function", "function": {"name": `encode[str[j.name]]``described_as`, "parameters": `encode[j.parameters]`}}'
+
+--- the tools as a JSON list in the provider's form, empty text for none
+fn _tools_wire[provider, tools]
+    if len[tools] eq 0
+        return ''
+    written = []
+    for t in tools
+        if provider eq 'anthropic'
+            written = push[written, _tool_anthropic[t]]
+        else
+            written = push[written, _tool_openai[t]]
+    glued1 = join[written, ', ']
+    return '[`glued1`]'
+
+--- the content blocks of a model's turn, in Anthropic's form: its text,
+--- then a tool_use block per call
+fn _blocks_anthropic[t]
+    blocks = []
+    words = str[t.text]
+    if len[words] gt 0
+        blocks = push[blocks, '{"type": "text", "text": `encode[words]`}']
+    if t.calls.ok
+        for c in t.calls
+            blocks = push[blocks, '{"type": "tool_use", "id": `encode[str[c.id]]`, "name": `encode[str[c.name]]`, "input": `encode[c.args]`}']
+    return blocks
+
+--- a tool's result as Anthropic's block, `is_error` where the result
+--- failed (the OpenAI-compatible form has no flag: its text says)
+fn _result_anthropic[t]
+    flagged = ''
+    if t.failed.ok
+        if t.failed
+            flagged = ', "is_error": true'
+    return '{"type": "tool_result", "tool_use_id": `encode[str[t.id]]`, "content": `encode[str[t.text]]``flagged`}'
+
+--- the conversation as Anthropic's messages: a user turn's text, a
+--- model's turn's blocks, and every run of tool results as one user turn
+--- of tool_result blocks (the API wants the roles to alternate)
+fn _messages_anthropic[talk]
+    written = []
+    pending = []
+    for t in talk
+        role = str[t.role]
+        if role eq 'tool'
+            pending = push[pending, _result_anthropic[t]]
+        else
+            if len[pending] gt 0
+                glued2 = join[pending, ', ']
+                written = push[written, '{"role": "user", "content": [`glued2`]}']
+                pending = []
+            if role eq 'assistant'
+                glued3 = join[_blocks_anthropic[t], ', ']
+                written = push[written, '{"role": "assistant", "content": [`glued3`]}']
+            else
+                written = push[written, '{"role": "user", "content": [{"type": "text", "text": `encode[str[t.text]]`}]}']
+    if len[pending] gt 0
+        glued4 = join[pending, ', ']
+        written = push[written, '{"role": "user", "content": [`glued4`]}']
+    glued5 = join[written, ', ']
+    return '[`glued5`]'
+
+--- the conversation as OpenAI's messages, the system prompt first when
+--- there is one: a model's turn carries its tool_calls, each call's
+--- arguments as JSON text, and a tool's result is a turn of its own
+fn _messages_openai[talk, system]
+    written = []
+    if len[system] gt 0
+        written = push[written, '{"role": "system", "content": `encode[system]`}']
+    for t in talk
+        role = str[t.role]
+        if role eq 'tool'
+            written = push[written, '{"role": "tool", "tool_call_id": `encode[str[t.id]]`, "content": `encode[str[t.text]]`}']
+        else if role eq 'assistant'
+            calls = []
+            if t.calls.ok
+                for c in t.calls
+                    calls = push[calls, '{"id": `encode[str[c.id]]`, "type": "function", "function": {"name": `encode[str[c.name]]`, "arguments": `encode[encode[c.args]]`}}']
+            content = encode[str[t.text]]
+            if len[str[t.text]] eq 0
+                content = 'null'
+            if len[calls] gt 0
+                glued6 = join[calls, ', ']
+                written = push[written, '{"role": "assistant", "content": `content`, "tool_calls": [`glued6`]}']
+            else
+                written = push[written, '{"role": "assistant", "content": `content`}']
+        else
+            written = push[written, '{"role": "user", "content": `encode[str[t.text]]`}']
+    glued7 = join[written, ', ']
+    return '[`glued7`]'
+
+--- the request's body in the provider's form; `streamed` asks for the
+--- reply piece by piece (with its usage, for an OpenAI-compatible server)
+fn _body_of[m, talk, system, tools, most, temperature, streamed]
+    provider = str[m.provider]
+    model = encode[str[m.model]]
+    tools_written = _tools_wire[provider, tools]
+    if provider eq 'anthropic'
+        fields = ['"model": `model`', '"max_tokens": `most`', '"temperature": `temperature`', '"messages": `_messages_anthropic[talk]`']
+        if len[system] gt 0
+            fields = push[fields, '"system": `encode[system]`']
+        if len[tools_written] gt 0
+            fields = push[fields, '"tools": `tools_written`']
+        if streamed
+            fields = push[fields, '"stream": true']
+        glued8 = join[fields, ', ']
+        return '{`glued8`}'
+    fields = ['"model": `model`', '"max_tokens": `most`', '"temperature": `temperature`', '"messages": `_messages_openai[talk, system]`']
+    if len[tools_written] gt 0
+        fields = push[fields, '"tools": `tools_written`']
+    if streamed
+        fields = push[fields, '"stream": true']
+        fields = push[fields, '"stream_options": {"include_usage": true}']
+    glued9 = join[fields, ', ']
+    return '{`glued9`}'
+
+--- the request's headers: the key as each provider takes it, and JSON
+fn _headers_of[m, streamed]
+    h = map[]
+    h = set[h, 'content-type', 'application/json']
+    key = str[m.key]
+    if str[m.provider] eq 'anthropic'
+        h = set[h, 'x-api-key', env[key, '']]
+        h = set[h, 'anthropic-version', '2023-06-01']
+    else
+        token = env[key, '']
+        if len[token] gt 0
+            h = set[h, 'authorization', 'Bearer `token`']
+    if streamed
+        h = set[h, 'accept', 'text/event-stream']
+    return h
+
+--- where a request goes: the chat endpoint of each provider
+fn _chat_path[m]
+    if str[m.provider] eq 'anthropic'
+        return '/v1/messages'
+    return '`str[m.path]`/chat/completions'
+
+--- a stop reason in the one shape: end, tool, length or other
+fn _stop_of[reason]
+    if reason eq 'end_turn' or reason eq 'stop'
+        return 'end'
+    if reason eq 'tool_use' or reason eq 'tool_calls'
+        return 'tool'
+    if reason eq 'max_tokens' or reason eq 'length'
+        return 'length'
+    return 'other'
+
+--- a reply written in the one shape
+fn _reply_text[words, calls, used_in, used_out, stop]
+    glued10 = join[calls, ', ']
+    return '{"text": `encode[words]`, "calls": [`glued10`], "usage": {"input": `used_in`, "output": `used_out`}, "stop": "`stop`"}'
+
+--- a call written in the one shape, its arguments the JSON the model
+--- wrote (an object of none where they do not parse)
+fn _call_text[id, name, given]
+    parsed = json[given]
+    written = '{}'
+    if parsed.ok
+        written = encode[parsed]
+    return '{"id": `encode[id]`, "name": `encode[name]`, "args": `written`}'
+
+--- a whole number a parsed value holds, or 0 where it holds none
+fn _count_of[j]
+    if not j.ok
+        return 0
+    n = int[j]
+    if not n.ok
+        return 0
+    return n
+
+--- Anthropic's reply read into the one shape: its text blocks joined,
+--- its tool_use blocks the calls
+fn _reply_anthropic[j]
+    words = ''
+    calls = []
+    if j.content.ok
+        for block in j.content
+            kind = str[block.type]
+            if kind eq 'text'
+                words = '`words``str[block.text]`'
+            else if kind eq 'tool_use'
+                calls = push[calls, _call_text[str[block.id], str[block.name], encode[block.input]]]
+    stop = 'other'
+    if j.stop_reason.ok
+        stop = _stop_of[str[j.stop_reason]]
+    return _reply_text[words, calls, _count_of[j.usage.input_tokens], _count_of[j.usage.output_tokens], stop]
+
+--- an OpenAI-compatible reply read into the one shape: the first choice's
+--- message, its tool_calls the calls
+fn _reply_openai[j]
+    words = ''
+    calls = []
+    stop = 'other'
+    if j.choices.ok and len[j.choices] gt 0
+        picked = j.choices[0]
+        if picked.message.content.ok and type[picked.message.content] eq 'str'
+            words = str[picked.message.content]
+        if picked.message.tool_calls.ok
+            for c in picked.message.tool_calls
+                calls = push[calls, _call_text[str[c.id], str[c.function.name], str[c.function.arguments]]]
+        if picked.finish_reason.ok
+            stop = _stop_of[str[picked.finish_reason]]
+    return _reply_text[words, calls, _count_of[j.usage.prompt_tokens], _count_of[j.usage.completion_tokens], stop]
+
+--- what a server's refusal says: the JSON error's message where its body
+--- has one, else the body itself, cut short
+fn _refusal_of[status, body]
+    j = json[body]
+    if j.ok
+        if j.error.ok
+            if type[j.error] eq 'map'
+                if j.error.message.ok
+                    return 'the model\'s server answered `status`: `str[j.error.message]`'
+            if type[j.error] eq 'str'
+                return 'the model\'s server answered `status`: `str[j.error]`'
+    shown = trim[body]
+    if len[shown] gt 200
+        shown = '`slice[shown, 0, 200]`…'
+    return 'the model\'s server answered `status`: `shown`'
+
+--- `chat[m, talk, system = '', tools = [], tokens = 1024, temperature = 1.0]`:
+--- the model's reply to the conversation, in the one shape
+fn chat[m, talk, system = '', tools = [], tokens = 1024, temperature = 1.0]
+    checked = _model_of[m]
+    if not checked.ok
+        return error[checked.reason, 'llm']
+    turns = _talk_of[talk]
+    if not turns.ok
+        return error[turns.reason, 'llm']
+    --- (the tools' schemas as text: what the compiler wrote for each
+    --- function named — shown as text here, so a call naming none hands
+    --- the wire a list of text all the same)
+    schemas = for t in tools
+        _schema_of[describe[t]]
+    return _chat_with[m, talk, system, schemas, tokens, temperature]
+
+--- the reply to a conversation, the model and the conversation read
+fn _chat_with[m, talk, system, tools, most, temperature]
+    body = _body_of[m, talk, system, tools, most, temperature, false]
+    r = request['`str[m.base]``_chat_path[m]`', 'POST', body, headers = _headers_of[m, false], timeout = 600]
+    if not r.ok
+        return error['cannot reach the model: `r.reason`', 'llm']
+    if r.status lt 200 or r.status gte 300
+        return error[_refusal_of[r.status, r.body], 'llm']
+    j = json[r.body]
+    if not j.ok
+        return error['the model\'s server answered no JSON: `slice[r.body, 0, 80]`', 'llm']
+    if str[m.provider] eq 'anthropic'
+        return json[_reply_anthropic[j]]
+    return json[_reply_openai[j]]
+
+--- `embed[m, texts]`: the texts' embeddings as a matrix, a row per text,
+--- from an OpenAI-compatible embeddings endpoint
+fn embed[m, texts]
+    checked = _model_of[m]
+    if not checked.ok
+        return error[checked.reason, 'llm']
+    if str[m.provider] eq 'anthropic'
+        return error['anthropic serves no embeddings: reach an openai://<host>/<embedding model>', 'llm']
+    body = '{"model": `encode[str[m.model]]`, "input": `encode[texts]`}'
+    r = request['`str[m.base]``str[m.path]`/embeddings', 'POST', body, headers = _headers_of[m, false], timeout = 600]
+    if not r.ok
+        return error['cannot reach the model: `r.reason`', 'llm']
+    if r.status lt 200 or r.status gte 300
+        return error[_refusal_of[r.status, r.body], 'llm']
+    j = json[r.body]
+    if not j.ok or not j.data.ok
+        return error['the model\'s server answered no embeddings: `slice[r.body, 0, 80]`', 'llm']
+    rows = []
+    for item in j.data
+        --- (a parsed number met in arithmetic is read as a float, and
+        --- stops where it is none: the row is floats, not values that can fail)
+        numbers = for x in item.embedding
+            x * 1.0
+        rows = push[rows, tensor[numbers]]
+    if len[rows] eq 0
+        return error['the model\'s server answered no embeddings', 'llm']
+    return stack[rows]
+
+--- ── a reply followed piece by piece ───────────────────────────────────
+
+--- a hex number's value, or -1 where the text is none
+fn _hex_of[s]
+    digits = split['0123456789abcdef', '']
+    value = 0
+    chars = split[lower[trim[s]], '']
+    if len[chars] eq 0
+        return -1
+    for ch in chars
+        d = -1
+        for i in range[16]
+            if digits[i] eq ch
+                d = i
+        if d lt 0
+            return -1
+        value = value * 16 + d
+    return value
+
+--- the bytes a hex line's chunk size names, from where the line starts;
+--- -1 for a size that is none
+fn _chunk_size[line]
+    return _hex_of[split[line, ';'][0]]
+
+--- the earliest of two places, each -1 for none
+fn _earliest[a, b]
+    if a lt 0
+        return b
+    if b lt 0
+        return a
+    if a lt b
+        return a
+    return b
+
+--- the raw bytes a socket holds that are not yet decoded, kept as a note
+fn _raw_of[s]
+    kept = noted[stream_of[s], 'llm.raw']
+    if len[kept] eq 0
+        return bytes['']
+    return unbase64[kept]
+
+--- the raw bytes kept for the next read
+fn _keep_raw[s, raw]
+    if len[raw] eq 0
+        note[stream_of[s], 'llm.raw', '']
+    else
+        note[stream_of[s], 'llm.raw', base64[raw]]
+
+--- a note read as a count, 0 where there is none
+fn _noted_count[s, key]
+    kept = noted[stream_of[s], key]
+    if len[kept] eq 0
+        return 0
+    n = int[kept]
+    if not n.ok
+        return 0
+    return n
+
+--- what the socket's raw bytes decode to, the chunk framing stripped —
+--- the bytes of complete chunks, and of the one in progress — and the
+--- rest kept raw; `llm.chunk` counts the bytes still due of the current
+--- chunk (a negative count is the chunk's trailing line break still to
+--- skip), and a final chunk of no bytes ends the reply
+fn _decoded_from[s, raw]
+    if noted[stream_of[s], 'llm.chunked'] ne '1'
+        _keep_raw[s, bytes['']]
+        return raw
+    out = bytes['']
+    rest = raw
+    due = _noted_count[s, 'llm.chunk']
+    while len[rest] gt 0
+        if due gt 0
+            take = due
+            if take gt len[rest]
+                take = len[rest]
+            out = concat[out, slice[rest, 0, take]]
+            rest = slice[rest, take, len[rest]]
+            due = due - take
+            if due eq 0
+                due = -2
+        else if due lt 0
+            skip = 0 - due
+            if skip gt len[rest]
+                skip = len[rest]
+            rest = slice[rest, skip, len[rest]]
+            due = due + skip
+        else
+            lf = find[rest, bytes['\r\n']]
+            if lf lt 0
+                break
+            size = _chunk_size[text[slice[rest, 0, lf], '�']]
+            rest = slice[rest, lf + 2, len[rest]]
+            if size lte 0
+                note[stream_of[s], 'llm.done', '1']
+                rest = bytes['']
+            else
+                due = size
+    note[stream_of[s], 'llm.chunk', '`due`']
+    _keep_raw[s, rest]
+    return out
+
+--- more of the reply read from the connection and decoded onto what the
+--- socket holds; whether anything came (the server closing the connection
+--- ends the reply)
+fn _read_more[s]
+    got = recv[stream_of[s], 65536, 120.0]
+    if not got.ok
+        return error['the connection to the model broke: `got.reason`', 'llm']
+    if len[got] eq 0
+        note[stream_of[s], 'llm.done', '1']
+        return false
+    decoded = _decoded_from[s, concat[_raw_of[s], got]]
+    if len[decoded] gt 0
+        unread[s, concat[leftover[s], decoded]]
+    return true
+
+--- an SSE event's lines read apart: its `event:` name and its `data:`
+--- lines joined, as a parsed value
+fn _event_fields[event]
+    name = ''
+    data = []
+    for line in split[replace[event, '\r\n', '\n'], '\n']
+        if starts[line, 'event:']
+            name = trim[slice[line, 6, len[line]]]
+        else if starts[line, 'data:']
+            data = push[data, trim[slice[line, 5, len[line]]]]
+    joined = join[data, '\n']
+    return json['{"event": `encode[name]`, "data": `encode[joined]`}']
+
+--- what one event of Anthropic's stream changes, as a parsed value: text
+--- to show, a call started (its id and name), a piece of a call's
+--- arguments, a call ended, a stop reason, usage counts, the end, or an
+--- error the server sent
+fn _event_anthropic[event]
+    fields = _event_fields[event]
+    name = str[fields.event]
+    data = str[fields.data]
+    if len[data] eq 0
+        return json['{}']
+    j = json[data]
+    if not j.ok
+        return json['{}']
+    if name eq 'content_block_delta'
+        kind = ''
+        if j.delta.type.ok
+            kind = str[j.delta.type]
+        if kind eq 'text_delta'
+            return json['{"text": `encode[str[j.delta.text]]`}']
+        if kind eq 'input_json_delta'
+            return json['{"args": `encode[str[j.delta.partial_json]]`}']
+        return json['{}']
+    if name eq 'content_block_start'
+        if j.content_block.type.ok and str[j.content_block.type] eq 'tool_use'
+            return json['{"start": {"id": `encode[str[j.content_block.id]]`, "name": `encode[str[j.content_block.name]]`}}']
+        return json['{}']
+    if name eq 'content_block_stop'
+        return json['{"end_call": true}']
+    if name eq 'message_start'
+        return json['{"input": `_count_of[j.message.usage.input_tokens]`}']
+    if name eq 'message_delta'
+        stop = ''
+        if j.delta.stop_reason.ok
+            stop = _stop_of[str[j.delta.stop_reason]]
+        return json['{"stop": "`stop`", "output": `_count_of[j.usage.output_tokens]`}']
+    if name eq 'message_stop'
+        return json['{"done": true}']
+    if name eq 'error'
+        return json['{"error": `encode[str[j.error.message]]`}']
+    return json['{}']
+
+--- what one event of an OpenAI-compatible stream changes: the first
+--- choice's delta — text, a call started or its arguments continued — the
+--- finish reason, the usage of the last chunk, and `[DONE]`
+fn _event_openai[event]
+    fields = _event_fields[event]
+    data = str[fields.data]
+    if len[data] eq 0
+        return json['{}']
+    if data eq '[DONE]'
+        return json['{"done": true}']
+    j = json[data]
+    if not j.ok
+        return json['{}']
+    if j.error.ok
+        if type[j.error] eq 'map'
+            if j.error.message.ok
+                return json['{"error": `encode[str[j.error.message]]`}']
+    changes = []
+    if j.usage.ok and type[j.usage] eq 'map'
+        changes = push[changes, '"input": `_count_of[j.usage.prompt_tokens]`']
+        changes = push[changes, '"output": `_count_of[j.usage.completion_tokens]`']
+    if j.choices.ok and len[j.choices] gt 0
+        picked = j.choices[0]
+        if picked.delta.content.ok and type[picked.delta.content] eq 'str'
+            changes = push[changes, '"text": `encode[str[picked.delta.content]]`']
+        if picked.delta.tool_calls.ok
+            for c in picked.delta.tool_calls
+                if c.id.ok and type[c.id] eq 'str' and len[str[c.id]] gt 0
+                    changes = push[changes, '"start": {"id": `encode[str[c.id]]`, "name": `encode[str[c.function.name]]`}']
+                if c.function.arguments.ok and type[c.function.arguments] eq 'str'
+                    changes = push[changes, '"args": `encode[str[c.function.arguments]]`']
+        if picked.finish_reason.ok and type[picked.finish_reason] eq 'str'
+            changes = push[changes, '"stop": "`_stop_of[str[picked.finish_reason]]`"']
+            changes = push[changes, '"end_call": true']
+    glued11 = join[changes, ', ']
+    return json['{`glued11`}']
+
+--- the call being gathered, ended: written into the reply's calls
+fn _end_call[s]
+    st = stream_of[s]
+    id = noted[st, 'llm.call_id']
+    if len[id] eq 0
+        return 0
+    written = _call_text[id, noted[st, 'llm.call_name'], noted[st, 'llm.call_args']]
+    calls = noted[st, 'llm.calls']
+    if len[calls] eq 0
+        note[st, 'llm.calls', written]
+    else
+        note[st, 'llm.calls', '`calls`, `written`']
+    note[st, 'llm.call_id', '']
+    note[st, 'llm.call_name', '']
+    note[st, 'llm.call_args', '']
+    return 1
+
+--- an event's changes applied to the reply the socket gathers; the text
+--- to show, if any
+fn _applied[s, change]
+    st = stream_of[s]
+    if change.error.ok
+        note[st, 'llm.error', str[change.error]]
+        note[st, 'llm.done', '1']
+        return ''
+    if change.start.ok
+        _end_call[s]
+        note[st, 'llm.call_id', str[change.start.id]]
+        note[st, 'llm.call_name', str[change.start.name]]
+        note[st, 'llm.call_args', '']
+    if change.args.ok
+        glued12 = noted[st, 'llm.call_args']
+        note[st, 'llm.call_args', '`glued12``str[change.args]`']
+    if change.end_call.ok
+        _end_call[s]
+    if change.stop.ok and len[str[change.stop]] gt 0
+        note[st, 'llm.stop', str[change.stop]]
+    if change.input.ok
+        note[st, 'llm.in', '`_count_of[change.input]`']
+    if change.output.ok
+        note[st, 'llm.out', '`_count_of[change.output]`']
+    if change.done.ok
+        note[st, 'llm.done', '1']
+    if change.text.ok
+        piece = str[change.text]
+        glued13 = noted[st, 'llm.text']
+        note[st, 'llm.text', '`glued13``piece`']
+        return piece
+    return ''
+
+--- whether the reply has ended
+fn _ended[s]
+    return noted[stream_of[s], 'llm.done'] eq '1'
+
+--- `follow[m, talk, …]`: the same request as `chat`'s, the reply followed
+--- as the model writes it — a socket the pieces are read from with `next`
+fn follow[m, talk, system = '', tools = [], tokens = 1024, temperature = 1.0]
+    checked = _model_of[m]
+    if not checked.ok
+        return error[checked.reason, 'llm']
+    turns = _talk_of[talk]
+    if not turns.ok
+        return error[turns.reason, 'llm']
+    schemas = for t in tools
+        _schema_of[describe[t]]
+    return _follow_with[m, talk, system, schemas, tokens, temperature]
+
+--- the reply followed, the model and the conversation read
+fn _follow_with[m, talk, system, tools, most, temperature]
+    base = str[m.base]
+    tls = starts[base, 'https://']
+    host = slice[base, 8, len[base]]
+    if not tls
+        host = slice[base, 7, len[base]]
+    port = 80
+    if tls
+        port = 443
+    named = split[host, ':']
+    if len[named] eq 2
+        given = int[named[1]]
+        if given.ok
+            port = given
+    body = bytes[_body_of[m, talk, system, tools, most, temperature, true]]
+    lines = ['POST `_chat_path[m]` HTTP/1.1', 'host: `host`', 'connection: close', 'content-length: `len[body]`']
+    h = _headers_of[m, true]
+    for name in keys[h]
+        lines = push[lines, '`name`: `h[name]`']
+    s = open[named[0], port, tls, 30.0]
+    if not s.ok
+        return error['cannot reach the model: `s.reason`', 'llm']
+    head_lines = join[lines, '\r\n']
+    sent = send[s, concat[bytes['`head_lines`\r\n\r\n'], body]]
+    if not sent.ok
+        return error['cannot reach the model: `sent.reason`', 'llm']
+    heading = read_head[s, now[] + 600.0]
+    if not heading.ok
+        return error['cannot reach the model: `heading.reason`', 'llm']
+    sock = socket_of[s, '`base``_chat_path[m]`', bytes['']]
+    chunked = '0'
+    if 'transfer-encoding' in heading.headers and lower[heading.headers['transfer-encoding']] eq 'chunked'
+        chunked = '1'
+    note[s, 'llm.chunked', chunked]
+    note[s, 'llm.provider', str[m.provider]]
+    if heading.status lt 200 or heading.status gte 300
+        rest = _decoded_from[sock, heading.body]
+        more = recv[s, 65536, 10.0]
+        while more.ok and len[more] gt 0 and not _ended[sock]
+            rest = concat[rest, _decoded_from[sock, concat[_raw_of[sock], more]]]
+            more = recv[s, 65536, 10.0]
+        close[s]
+        return error[_refusal_of[heading.status, text[rest, '�']], 'llm']
+    first = _decoded_from[sock, heading.body]
+    unread[sock, first]
+    return sock
+
+--- `next[s]`: the next piece of the reply's text; empty text once the
+--- reply has ended
+fn next[s]
+    while true
+        if len[noted[stream_of[s], 'llm.error']] gt 0
+            glued14 = noted[stream_of[s], 'llm.error']
+            return error['the model\'s server answered: `glued14`', 'llm']
+        buffer = leftover[s]
+        cut = _earliest[find[buffer, bytes['\n\n']], find[buffer, bytes['\r\n\r\n']]]
+        if cut gte 0
+            after = cut + 2
+            if slice[buffer, cut, cut + 2] eq bytes['\r\n']
+                after = cut + 4
+            event = text[slice[buffer, 0, cut], '�']
+            unread[s, slice[buffer, after, len[buffer]]]
+            piece = ''
+            if noted[stream_of[s], 'llm.provider'] eq 'anthropic'
+                piece = _applied[s, _event_anthropic[event]]
+            else
+                piece = _applied[s, _event_openai[event]]
+            if len[piece] gt 0
+                return piece
+        else
+            --- (the event begun is held while the rest of it is read:
+            --- `leftover` takes what the socket holds, and an event that
+            --- straddled two reads had been lost)
+            unread[s, buffer]
+            if _ended[s]
+                _end_call[s]
+                return ''
+            came = _read_more[s]
+            if not came.ok
+                return error[came.reason, 'llm']
+    return ''
+
+--- `reply[s]`: the whole reply the socket has gathered so far, in the one
+--- shape
+fn reply[s]
+    st = stream_of[s]
+    if _ended[s]
+        _end_call[s]
+    calls = noted[st, 'llm.calls']
+    stop = noted[st, 'llm.stop']
+    if len[stop] eq 0
+        stop = 'other'
+        if not _ended[s]
+            stop = ''
+    used_in = _noted_count[s, 'llm.in']
+    used_out = _noted_count[s, 'llm.out']
+    glued15 = encode[noted[st, 'llm.text']]
+    return json['{"text": `glued15`, "calls": [`calls`], "usage": {"input": `used_in`, "output": `used_out`}, "stop": "`stop`"}']
+
+--- ── the loop: the model runs its tools until it answers ───────────────
+
+--- what a run answered: the model's last text, why the run ended (`end`,
+--- `length`, `other`, `rounds`, `budget`), the rounds it took, the tokens
+--- it spent (`usage.input`, `usage.output`), the conversation as it ended,
+--- and a frame of its steps — a row per model call and per tool call
+struct Done [text, stop, rounds, usage, talk, steps]
+
+--- a call's outcome as a parsed value: the result's text, whether it
+--- failed, and how it went — ok, failed, arguments, refused or unknown
+fn _outcome[words, failed, how]
+    return json['{"text": `encode[words]`, "failed": `failed`, "how": `encode[how]`}']
+
+--- what `apply` answered, as the model is to read it: a text's own words
+--- (`apply` encodes its answer), any other value as its JSON
+fn _plain_of[encoded]
+    parsed = json[encoded]
+    if parsed.ok
+        if type[parsed] eq 'str'
+            return str[parsed]
+    return encoded
+
+--- the call's tool applied to its arguments, each read by its parameter's
+--- kind; an argument missing or of another kind, a tool's own failure and
+--- a name no tool has are each a failed result that says why, so every
+--- call is answered
+fn _answered[tools, call]
+    for t in tools
+        if str[describe[t].name] eq str[call.name]
+            out = apply[t, call.args]
+            if not out.ok
+                how = 'failed'
+                if out.kind eq 'call'
+                    how = 'arguments'
+                return _outcome[out.reason, true, how]
+            return _outcome[_plain_of[out], false, 'ok']
+    return _outcome['no tool is named `str[call.name]`', true, 'unknown']
+
+--- the conversation with the tool results of rounds older than the last
+--- `keep` cut to a stub naming their size (a round is a model's turn and
+--- the results that answer it); a result already cut stays as it is
+fn _trimmed[talk, keep]
+    seen = 0
+    for t in talk
+        if str[t.role] eq 'assistant'
+            seen = seen + 1
+    turns = []
+    round_n = 0
+    for t in talk
+        role = str[t.role]
+        if role eq 'assistant'
+            round_n = round_n + 1
+        if role eq 'tool' and round_n lte seen - keep and not t.cut.ok
+            words = str[t.text]
+            failed = ''
+            if t.failed.ok
+                failed = ', "failed": true'
+            turns = push[turns, '{"role": "tool", "id": `encode[str[t.id]]`, "text": "[a result of `len[words]` characters, cut]", "cut": true`failed`}']
+        else
+            turns = push[turns, encode[t]]
+    glued = join[turns, ', ']
+    return json['[`glued`]']
+
+--- ── the gate: the program's say before a tool runs ─────────────────────
+
+--- a refused call's outcome: a failed result that says so
+fn _refused[call]
+    return _outcome['`str[call.name]` is not allowed by the program', true, 'refused']
+
+--- why a gate is no gate: it takes the call, one parameter, and answers a
+--- bool; empty text for one that does
+fn _no_gate[d]
+    if len[d.params] ne 1 or str[d.answers] ne 'a bool'
+        return 'a gate takes the call and answers a bool: `str[d.name]` takes `len[d.params]` and answers `str[d.answers]`'
+    return ''
+
+--- whether every gate allows the call: each applied by name, the call
+--- under its one parameter's name (a parsed value: the gate reads its
+--- fields), and read as its bool
+fn _allowed[gates, call]
+    for g in gates
+        d = describe[g]
+        named = str[d.params[0].name]
+        said = apply[g, json['{"`named`": `encode[call]`}']]
+        if not said.ok
+            return false
+        if said ne 'true'
+            return false
+    return true
+
+--- ── tools from MCP servers ─────────────────────────────────────────────
+
+--- the tools the servers offer, each as a parsed value of its name, its
+--- schema in the one shape a model is told, and which server has it (its
+--- place in the list); a name two servers share, or one a program's tool
+--- has, is refused, as the protocol advises
+fn _served_tools[servers, taken]
+    found = []
+    seen = taken
+    at = 0
+    for s in servers
+        listed = mcp.catalog[s]
+        if not listed.ok
+            return error[listed.reason, 'llm']
+        --- (a server is named by its endpoint's URL, or by the command that
+        --- runs it over stdio)
+        origin = str[s.url]
+        if len[origin] eq 0
+            if s.command.ok
+                origin = str[s.command]
+        for t in listed
+            name = str[t.name]
+            if name in seen
+                return error['the MCP server `origin` offers a tool named `name`, which another tool has: the names must differ', 'llm']
+            seen = push[seen, name]
+            described_as = ''
+            if t.description.ok
+                described_as = str[t.description]
+            schema = '{"type": "object"}'
+            if t.inputSchema.ok
+                schema = encode[t.inputSchema]
+            found = push[found, '{"name": `encode[name]`, "schema": {"name": `encode[name]`, "description": `encode[described_as]`, "parameters": `schema`}, "server": `at`}']
+        at = at + 1
+    glued = join[found, ', ']
+    return json['[`glued`]']
+
+--- the server's tool a call names, called with the call's arguments; a
+--- failed result where the server marks one, or does not answer
+fn _served_call[servers, served, call]
+    name = str[call.name]
+    for t in served
+        if str[t.name] eq name
+            at = _count_of[t.server]
+            s = servers[at]
+            out = mcp.tool[s, name, call.args]
+            if not out.ok
+                return _outcome[out.reason, true, 'failed']
+            return _outcome[out, false, 'ok']
+    return _outcome['no tool is named `name`', true, 'unknown']
+
+--- whether a call names a server's tool
+fn _is_served[served, call]
+    name = str[call.name]
+    for t in served
+        if str[t.name] eq name
+            return true
+    return false
+
+--- ── skills: know-how loaded on demand (agentskills.io) ─────────────────
+
+--- a SKILL.md's frontmatter as a parsed value — the `key: value` lines
+--- between the first `---` and the next — and its body after it; an
+--- error naming the file where the frontmatter is none
+fn _skill_read[path]
+    whole = read[path]
+    if not whole.ok
+        return error['the skill file `path` cannot be read: `whole.reason`', 'llm']
+    lines = split[replace[whole, '\r\n', '\n'], '\n']
+    if len[lines] eq 0 or trim[lines[0]] ne '---'
+        return error['the skill file `path` does not begin with a --- frontmatter line', 'llm']
+    fields = []
+    closed = -1
+    i = 1
+    while i lt len[lines]
+        line = lines[i]
+        if trim[line] eq '---'
+            closed = i
+            break
+        pieces = split[line, ':']
+        if len[pieces] gt 1 and not starts[line, ' ']
+            key = trim[pieces[0]]
+            value = trim[join[slice[pieces, 1, len[pieces]], ':']]
+            fields = push[fields, '`encode[key]`: `encode[value]`']
+        i = i + 1
+    if closed lt 0
+        return error['the skill file `path` does not close its frontmatter with a --- line', 'llm']
+    body = join[slice[lines, closed + 1, len[lines]], '\n']
+    glued = join[fields, ', ']
+    return json['{"fields": {`glued`}, "body": `encode[trim[body]]`}']
+
+--- why a skill's name is no name under the standard's rules: 1 to 64
+--- characters, lowercase letters, digits and single hyphens, neither
+--- first nor last, matching its folder; empty text for a name that is one
+fn _skill_name_fault[name, folder]
+    if len[name] lt 1 or len[name] gt 64
+        return 'is `len[name]` characters long, and a name is 1 to 64'
+    if name ne folder
+        return 'does not match its folder `folder`'
+    if starts[name, '-'] or ends[name, '-']
+        return 'begins or ends with a hyphen'
+    if '--' in name
+        return 'holds two hyphens in a row'
+    for ch in split[name, '']
+        if not (ch in 'abcdefghijklmnopqrstuvwxyz0123456789-')
+            return 'holds \'`ch`\', and a name holds lowercase letters, digits and hyphens'
+    return ''
+
+--- the skills a folder holds, each a parsed value of its name,
+--- description and folder, read by the standard's rules; an error naming
+--- the skill and the rule where one is broken
+fn _skills_in[folder]
+    entries = ls[folder]
+    if not entries.ok
+        return error['the skills folder `folder` cannot be read: `entries.reason`', 'llm']
+    found = []
+    for entry in entries
+        path = '`folder`/`entry`/SKILL.md'
+        if exists[path]
+            s = _skill_read[path]
+            if not s.ok
+                return error[s.reason, 'llm']
+            if not s.fields.name.ok or not s.fields.description.ok
+                return error['the skill `entry` lacks a name or a description in its frontmatter', 'llm']
+            name = str[s.fields.name]
+            fault = _skill_name_fault[name, entry]
+            if len[fault] gt 0
+                return error['the skill `entry`\'s name \'`name`\' `fault`', 'llm']
+            described = str[s.fields.description]
+            if len[described] lt 1 or len[described] gt 1024
+                return error['the skill `entry`\'s description is `len[described]` characters long, and a description is 1 to 1024', 'llm']
+            place = '`folder`/`entry`'
+            found = push[found, '{"name": `encode[name]`, "description": `encode[described]`, "folder": `encode[place]`}']
+    glued = join[found, ', ']
+    return json['[`glued`]']
+
+--- what the system prompt says of the skills: each name with its
+--- description, and how to load one
+fn _skills_prompt[skills]
+    if len[skills] eq 0
+        return ''
+    lines = ['Skills you can load when a task matches one, with the tool skill[name]; its files with skill_file[name, path]:']
+    for s in skills
+        lines = push[lines, '- `str[s.name]`: `str[s.description]`']
+    return join[lines, '\n']
+
+--- the two tools the skills bring, as the model is told them
+fn _skill_schemas[]
+    load_tool = '{"name": "skill", "description": "the instructions of a skill, loaded by its name", "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}}'
+    file_tool = '{"name": "skill_file", "description": "a file a skill refers to, read by the skill\'s name and the file\'s path inside the skill", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "path": {"type": "string"}}, "required": ["name", "path"]}}'
+    return [load_tool, file_tool]
+
+--- the skill of a name, or none
+fn _skill_named[skills, name]
+    for s in skills
+        if str[s.name] eq name
+            return s
+    return json['{}']
+
+--- a skill's instructions (its body), by name: a failed result where no
+--- skill has the name
+fn _skill_loaded[skills, call]
+    name = str[call.args.name]
+    s = _skill_named[skills, name]
+    if not s.name.ok
+        return _outcome['no skill is named `name`', true, 'unknown']
+    read_in = _skill_read['`str[s.folder]`/SKILL.md']
+    if not read_in.ok
+        return _outcome[read_in.reason, true, 'failed']
+    return _outcome[str[read_in.body], false, 'ok']
+
+--- a file of a skill's, by the skill's name and the file's path inside
+--- it: a path that leaves the skill is refused
+fn _skill_file_read[skills, call]
+    name = str[call.args.name]
+    path = str[call.args.path]
+    s = _skill_named[skills, name]
+    if not s.name.ok
+        return _outcome['no skill is named `name`', true, 'unknown']
+    if starts[path, '/'] or '..' in path or len[path] eq 0
+        return _outcome['a skill\'s file is named by its path inside the skill: `path`', true, 'failed']
+    whole = read['`str[s.folder]`/`path`']
+    if not whole.ok
+        return _outcome['the skill `name` has no file `path`', true, 'failed']
+    return _outcome[whole, false, 'ok']
+
+--- the conversation as a model can read it whole, a turn per line: who
+--- spoke and the words, a model's calls beside its words, a result
+--- naming the call it answers
+fn _transcript[talk]
+    lines = []
+    for t in talk
+        role = str[t.role]
+        if role eq 'tool'
+            lines = push[lines, 'result `str[t.id]`: `str[t.text]`']
+        else if role eq 'assistant'
+            said = str[t.text]
+            if t.calls.ok
+                for c in t.calls
+                    said = '`said` [call `str[c.id]`: `str[c.name]` `encode[c.args]`]'
+            lines = push[lines, 'assistant: `said`']
+        else
+            lines = push[lines, 'user: `str[t.text]`']
+    return join[lines, '\n']
+
+--- what the model is asked when the conversation is compacted: a
+--- summary of the transcript, for itself, asked in one user turn of a
+--- conversation of its own (a user turn added after a tool's results
+--- breaks the alternation of roles the wires require); and the user turn
+--- a compacted conversation starts from
+fn _compact_ask[talk]
+    return ask['Summarize the conversation below for yourself, to continue the task from the summary alone: the task, what has been done and found, and what remains. Answer with the summary only.\n\n`_transcript[talk]`']
+
+fn _compacted[summary]
+    return ask['The conversation so far, summarized:\n`summary`\n\nContinue the task from here.']
+
+--- `act[m, talk, tools = [], allow = [], rounds = 8, system = '', tokens =
+--- 1024, temperature = 1.0, budget = 0, keep = 0, compact = 0]`: the
+--- model runs its tools in a loop until it answers or a limit stops it —
+--- each reply's calls answered by the tools' own functions, every call
+--- answered and a failure told as one; `allow = [g]` names the program's
+--- gates, each a function of the call answering a bool, every one asked
+--- before a tool runs and a refusal told to the model as a failed result;
+--- at most `rounds` model calls, at most `budget` tokens in all (0 for no
+--- budget); `keep = n` cuts the
+--- tool results of rounds older than the last n to a stub, `compact = n`
+--- asks the model for a summary once a reply read n tokens or more and
+--- goes on from the summary alone (0 for never); `skills = folder` reads
+--- the skills the folder holds (a SKILL.md in each, by the standard's
+--- rules), names them in the system prompt and lets the model load one,
+--- and the files it refers to, through the tools `skill` and
+--- `skill_file`; `servers = [s]` adds the tools each MCP server offers
+--- (`use mcp`), called on the server; a record: `text`, `stop`, `rounds`,
+--- `usage`, `talk`, `steps`
+fn act[m, talk, tools = [], allow = [], rounds = 8, system = '', tokens = 1024, temperature = 1.0, budget = 0, keep = 0, compact = 0, skills = '', servers = []]
+    checked = _model_of[m]
+    if not checked.ok
+        return error[checked.reason, 'llm']
+    turns = _talk_of[talk]
+    if not turns.ok
+        return error[turns.reason, 'llm']
+    if rounds lt 1
+        return error['act[…] runs at least one round: rounds = `rounds`', 'llm']
+    for g in allow
+        wrong = _no_gate[describe[g]]
+        if len[wrong] gt 0
+            return error[wrong, 'llm']
+    known = json['[]']
+    if len[skills] gt 0
+        read_in = _skills_in[skills]
+        if not read_in.ok
+            return error[read_in.reason, 'llm']
+        known = read_in
+        for t in tools
+            named = str[describe[t].name]
+            if named eq 'skill' or named eq 'skill_file'
+                return error['a tool is named `named`, which the skills\' own tools take: rename it', 'llm']
+        listed = _skills_prompt[known]
+        if len[system] gt 0
+            system = '`system`\n\n`listed`'
+        else
+            system = listed
+    --- (each tool's schema, or the package's error where a tool takes what
+    --- a model cannot hand it; a list of text, as the skills' and the
+    --- servers' schemas are)
+    schemas = []
+    for t in tools
+        one = _schema_of[describe[t]]
+        if not one.ok
+            return error[one.reason, 'llm']
+        schemas = push[schemas, one]
+    if len[skills] gt 0
+        schemas = concat[schemas, _skill_schemas[]]
+    served = json['[]']
+    --- (the servers as their JSON: a list the loop reads the same whatever
+    --- the program's list holds — the default `[]` has items of no kind,
+    --- and the copy of act made for it is compiled too)
+    reached = json['[]']
+    if len[servers] gt 0
+        reached = json[encode[servers]]
+        taken = for t in tools
+            str[describe[t].name]
+        if len[skills] gt 0
+            taken = concat[taken, ['skill', 'skill_file']]
+        listed = _served_tools[reached, taken]
+        if not listed.ok
+            return error[listed.reason, 'llm']
+        served = listed
+        for t in served
+            schemas = push[schemas, encode[t.schema]]
+    whats = []
+    names = []
+    ins = []
+    outs = []
+    mss = []
+    hows = []
+    spent_in = 0
+    spent_out = 0
+    round_n = 0
+    stop = ''
+    words = ''
+    while len[stop] eq 0
+        round_n = round_n + 1
+        if keep gt 0
+            talk = _trimmed[talk, keep]
+        t0 = float[now[]]
+        r = _chat_with[m, talk, system, schemas, tokens, temperature]
+        if not r.ok
+            return error[r.reason, 'llm']
+        whats = push[whats, 'chat']
+        names = push[names, str[m.model]]
+        ins = push[ins, _count_of[r.usage.input]]
+        outs = push[outs, _count_of[r.usage.output]]
+        mss = push[mss, (float[now[]] - t0) * 1000.0]
+        hows = push[hows, str[r.stop]]
+        spent_in = spent_in + _count_of[r.usage.input]
+        spent_out = spent_out + _count_of[r.usage.output]
+        words = str[r.text]
+        talk = said[talk, r]
+        if str[r.stop] ne 'tool'
+            stop = str[r.stop]
+        else
+            for call in r.calls
+                t1 = float[now[]]
+                got = _refused[call]
+                if _allowed[allow, call]
+                    got = _answered[tools, call]
+                    if len[servers] gt 0 and _is_served[served, call]
+                        got = _served_call[reached, served, call]
+                    if len[skills] gt 0 and str[call.name] eq 'skill'
+                        got = _skill_loaded[known, call]
+                    else if len[skills] gt 0 and str[call.name] eq 'skill_file'
+                        got = _skill_file_read[known, call]
+                flag = false
+                if got.failed
+                    flag = true
+                whats = push[whats, 'tool']
+                names = push[names, str[call.name]]
+                ins = push[ins, 0]
+                outs = push[outs, 0]
+                mss = push[mss, (float[now[]] - t1) * 1000.0]
+                hows = push[hows, str[got.how]]
+                talk = told[talk, call, str[got.text], failed = flag]
+            if round_n gte rounds
+                stop = 'rounds'
+            else if budget gt 0 and spent_in + spent_out gte budget
+                stop = 'budget'
+            else if compact gt 0 and _count_of[r.usage.input] gte compact
+                --- (the summary is asked with no tools, so the model answers
+                --- in words; the run goes on from it alone, the original
+                --- question inside the summary)
+                t2 = float[now[]]
+                summary = _chat_with[m, _compact_ask[talk], system, [], tokens, temperature]
+                if not summary.ok
+                    return error[summary.reason, 'llm']
+                whats = push[whats, 'compact']
+                names = push[names, str[m.model]]
+                ins = push[ins, _count_of[summary.usage.input]]
+                outs = push[outs, _count_of[summary.usage.output]]
+                mss = push[mss, (float[now[]] - t2) * 1000.0]
+                hows = push[hows, str[summary.stop]]
+                spent_in = spent_in + _count_of[summary.usage.input]
+                spent_out = spent_out + _count_of[summary.usage.output]
+                talk = _compacted[str[summary.text]]
+    steps = frame.new[step = range[1, len[whats] + 1], what = whats, name = names, input = ins, output = outs, ms = mss, how = hows]
+    usage = json['{"input": `spent_in`, "output": `spent_out`}']
+    return Done[words, stop, round_n, usage, talk, steps]
+
+--- ── the package's own tests ───────────────────────────────────────────
+
+--- a tool the package's own tests describe and call by name
+fn _forecast[city, days = 2]
+    return '`days` days of sun in `upper[city]`'
+
+--- a tool that fails, for the tests: its failure is the call's result
+fn _breaks[city]
+    return error['the weather service is down in `upper[city]`', 'weather']
+
+--- a gate that allows every named call, and one that allows none: each
+--- reads the call's fields and is called by no one, so the fields type it
+fn _any_call[call]
+    return len[str[call.name]] gt 0
+
+fn _no_call[call]
+    return len[str[call.name]] eq 0
+
+--- the gates are asked by name, every one, and a gate that is none is
+--- said so; a refused call's outcome says why
+test a_gate_is_asked_by_name[]
+    call = json['{"id": "c1", "name": "_forecast", "args": {"city": "Oslo", "days": 3}}']
+    assert[_allowed[[_any_call], call]]
+    assert[not _allowed[[_no_call], call]]
+    assert[not _allowed[[_any_call, _no_call], call]]
+    assert[_no_gate[describe[_any_call]] eq '']
+    assert[_no_gate[describe[_forecast]] eq 'a gate takes the call and answers a bool: _forecast takes 2 and answers text']
+    refused = _refused[call]
+    assert[str[refused.failed] eq 'true']
+    assert[str[refused.how] eq 'refused']
+    assert[str[refused.text] eq '_forecast is not allowed by the program']
+    m = reach['openai://127.0.0.1:9/self-model']
+    ungated = act[m, ask['hi'], tools = [_forecast], allow = [_forecast]]
+    assert[not ungated.ok]
+    assert[ungated.reason eq 'a gate takes the call and answers a bool: _forecast takes 2 and answers text']
+
+--- a call is answered by the tool of its name — the tool's value as the
+--- model reads it; a missing argument, a tool's own failure and a name
+--- no tool has each a failed result saying why
+test a_call_is_answered_by_the_tool_of_its_name[]
+    call = json['{"id": "c1", "name": "_forecast", "args": {"city": "Oslo", "days": 3}}']
+    got = _answered[[_forecast, _breaks], call]
+    assert[str[got.text] eq '3 days of sun in OSLO']
+    assert[str[got.failed] eq 'false']
+    assert[str[got.how] eq 'ok']
+    missing = _answered[[_forecast, _breaks], json['{"id": "c2", "name": "_forecast", "args": {"days": 3}}']]
+    assert[str[missing.failed] eq 'true']
+    assert[str[missing.how] eq 'arguments']
+    broken = _answered[[_forecast, _breaks], json['{"id": "c3", "name": "_breaks", "args": {"city": "Oslo"}}']]
+    assert[str[broken.how] eq 'failed']
+    assert[str[broken.text] eq 'the weather service is down in OSLO']
+    unknown = _answered[[_forecast, _breaks], json['{"id": "c4", "name": "nothing", "args": {}}']]
+    assert[str[unknown.how] eq 'unknown']
+    assert[str[unknown.text] eq 'no tool is named nothing']
+    assert[_plain_of['"plain words"'] eq 'plain words']
+    assert[_plain_of['{"a": 1}'] eq '{"a": 1}']
+    assert[_plain_of['42'] eq '42']
+
+--- a failed result is told as one: the turn says so, Anthropic's block
+--- carries is_error, and the OpenAI-compatible turn its text alone
+test a_failed_result_is_told_as_one[]
+    r = json['{"text": "", "calls": [{"id": "c1", "name": "weather", "args": {"city": "Nowhere"}}], "usage": {"input": 3, "output": 4}, "stop": "tool"}']
+    talk = told[said[ask['hi'], r], r.calls[0], 'the weather service is down', failed = true]
+    assert[str[talk[2].failed] eq 'true']
+    fine = told[said[ask['hi'], r], r.calls[0], '21']
+    assert[not fine[2].failed.ok]
+    a = json[_messages_anthropic[talk]]
+    assert[str[a[2].content[0].is_error] eq 'true']
+    assert[str[a[2].content[0].content] eq 'the weather service is down']
+    b = json[_messages_anthropic[fine]]
+    assert[not b[2].content[0].is_error.ok]
+    o = json[_messages_openai[talk, '']]
+    assert[str[o[2].content] eq 'the weather service is down']
+    assert[not o[2].failed.ok]
+
+--- the loop refuses a round count below one, and a model nobody answers
+--- is its error, as chat's
+test the_loop_is_held_to_its_limits[]
+    m = reach['openai://127.0.0.1:9/self-model']
+    none = act[m, ask['hi'], tools = [_forecast], rounds = 0]
+    assert[not none.ok]
+    assert[none.reason eq 'act[…] runs at least one round: rounds = 0']
+    gone = act[m, ask['hi'], tools = [_forecast]]
+    assert[not gone.ok]
+    assert[gone.kind eq 'llm']
+    assert[starts[gone.reason, 'cannot reach the model']]
+
+--- a function described (its name, its comment, its parameters' kinds and
+--- defaults, what it answers) and called by name, with an argument
+--- missing and one of another kind refused as errors of kind call
+test a_function_is_described_and_called_by_name[]
+    d = describe[_forecast]
+    assert[str[d.name] eq '_forecast']
+    assert[str[d.doc] eq 'a tool the package\'s own tests describe and call by name']
+    assert[len[d.params] eq 2]
+    assert[str[d.params[0].name] eq 'city']
+    assert[str[d.params[0].takes] eq 'text']
+    assert[str[d.params[1].takes] eq 'an int']
+    assert[int[d.params[1].default] eq 2]
+    assert[str[d.answers] eq 'text']
+    said = apply[_forecast, json['{"city": "Oslo", "days": 3}']]
+    assert[said eq '"3 days of sun in OSLO"']
+    missing = apply[_forecast, json['{"city": "Oslo"}']]
+    assert[not missing.ok]
+    assert[missing.kind eq 'call']
+    wrong = apply[_forecast, json['{"city": "Oslo", "days": "many"}']]
+    assert[not wrong.ok]
+    schema = _schema_of[d]
+    assert['"required": ["city", "days"]' in schema]
+    assert['"days": {"type": "integer"}' in schema]
+
+--- a model's URL read apart: the provider, the model, where requests go,
+--- and the key's variable; the refusals of a URL that names no model
+test a_models_url_is_read_apart[]
+    local = reach['openai://localhost:11434/llama3.2']
+    assert[str[local.provider] eq 'openai']
+    assert[str[local.model] eq 'llama3.2']
+    assert[str[local.base] eq 'http://localhost:11434']
+    assert[str[local.path] eq '/v1']
+    assert[str[local.key] eq 'OPENAI_API_KEY']
+    routed = reach['openai://localhost:4000/anthropic/claude-sonnet-4.5?path=/api/v1']
+    assert[str[routed.model] eq 'anthropic/claude-sonnet-4.5']
+    assert[str[routed.path] eq '/api/v1']
+    assert[not reach['openai://localhost:11434'].ok]
+    assert[reach['openai://localhost:11434/'].kind eq 'llm']
+    assert[not reach['anthropic://'].ok]
+    assert[not reach['https://api.anthropic.com'].ok]
+    assert[reach['ftp://x'].reason eq 'cannot reach \'ftp://x\': a model\'s URL is anthropic://<model> or openai://<host>/<model>']
+    unset = reach['anthropic://claude-sonnet-5-5?key=CROW_LLM_TEST_NO_SUCH_KEY']
+    assert[not unset.ok]
+    assert[unset.reason eq 'cannot reach \'anthropic://claude-sonnet-5-5?key=CROW_LLM_TEST_NO_SUCH_KEY\': the key\'s variable CROW_LLM_TEST_NO_SUCH_KEY is not set']
+
+--- a conversation grows a turn at a time, each in the one shape
+test a_conversation_is_built_a_turn_at_a_time[]
+    talk = ask['hi']
+    assert[len[talk] eq 1]
+    assert[str[talk[0].role] eq 'user']
+    assert[str[talk[0].text] eq 'hi']
+    talk = asked[talk, 'and "then"?']
+    assert[len[talk] eq 2]
+    assert[str[talk[1].text] eq 'and "then"?']
+    r = json['{"text": "let me check", "calls": [{"id": "c1", "name": "weather", "args": {"city": "Lisbon"}}], "usage": {"input": 3, "output": 4}, "stop": "tool"}']
+    talk = said[talk, r]
+    assert[str[talk[2].role] eq 'assistant']
+    assert[str[talk[2].calls[0].name] eq 'weather']
+    talk = told[talk, r.calls[0], '21°C']
+    assert[str[talk[3].role] eq 'tool']
+    assert[str[talk[3].id] eq 'c1']
+    assert[str[talk[3].text] eq '21°C']
+
+--- each wire format is written from the one shape: Anthropic's content
+--- blocks with a run of tool results in one user turn, OpenAI's messages
+--- with the system prompt first and each result a turn of its own
+test the_conversation_is_written_in_each_wire_format[]
+    talk = json['[{"role": "user", "text": "hi"}, {"role": "assistant", "text": "", "calls": [{"id": "c1", "name": "weather", "args": {"city": "Lisbon"}}, {"id": "c2", "name": "weather", "args": {"city": "Porto"}}]}, {"role": "tool", "id": "c1", "text": "21"}, {"role": "tool", "id": "c2", "text": "19"}]']
+    a = json[_messages_anthropic[talk]]
+    assert[len[a] eq 3]
+    assert[str[a[0].content[0].text] eq 'hi']
+    assert[str[a[1].content[0].type] eq 'tool_use']
+    assert[str[a[1].content[1].input.city] eq 'Porto']
+    assert[str[a[2].role] eq 'user']
+    assert[len[a[2].content] eq 2]
+    assert[str[a[2].content[1].tool_use_id] eq 'c2']
+    o = json[_messages_openai[talk, 'be brief']]
+    assert[len[o] eq 5]
+    assert[str[o[0].role] eq 'system']
+    assert[str[o[2].tool_calls[0].function.name] eq 'weather']
+    assert[str[json[str[o[2].tool_calls[1].function.arguments]].city] eq 'Porto']
+    assert[str[o[3].role] eq 'tool']
+    assert[str[o[4].tool_call_id] eq 'c2']
+
+--- a tool's schema goes to each provider in its form, the description
+--- only where there is one
+test a_tools_schema_is_written_for_each_provider[]
+    schema = '{"name": "weather", "description": "the weather in a city", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}'
+    a = json[_tool_anthropic[schema]]
+    assert[str[a.name] eq 'weather']
+    assert[str[a.input_schema.properties.city.type] eq 'string']
+    o = json[_tool_openai[schema]]
+    assert[str[o.type] eq 'function']
+    assert[str[o.function.description] eq 'the weather in a city']
+    bare = json[_tool_openai['{"name": "ping", "description": "", "parameters": {"type": "object", "properties": {}, "required": []}}']]
+    assert[not bare.function.description.ok]
+    assert[_tools_wire['openai', []] eq '']
+    m = json['{"provider": "anthropic", "model": "claude", "base": "https://api.anthropic.com", "path": "/v1", "key": "K"}']
+    body = json[_body_of[m, ask['hi'], 'brief', [schema], 64, 0.5, true]]
+    assert[str[body.system] eq 'brief']
+    assert[int[body.max_tokens] eq 64]
+    assert[str[body.tools[0].name] eq 'weather']
+    assert[body.stream.ok]
+
+--- each provider's reply is read into the one shape
+test a_reply_is_read_into_the_one_shape[]
+    a = json[_reply_anthropic[json['{"content": [{"type": "text", "text": "Let me "}, {"type": "text", "text": "check."}, {"type": "tool_use", "id": "toolu_1", "name": "weather", "input": {"city": "Lisbon"}}], "stop_reason": "tool_use", "usage": {"input_tokens": 12, "output_tokens": 7}}']]]
+    assert[str[a.text] eq 'Let me check.']
+    assert[str[a.calls[0].id] eq 'toolu_1']
+    assert[str[a.calls[0].args.city] eq 'Lisbon']
+    assert[str[a.stop] eq 'tool']
+    assert[int[a.usage.input] eq 12]
+    o = json[_reply_openai[json['{"choices": [{"message": {"content": null, "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "weather", "arguments": "{\\"city\\": \\"Porto\\"}"}}]}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 5, "completion_tokens": 9}}']]]
+    assert[str[o.text] eq '']
+    assert[str[o.calls[0].args.city] eq 'Porto']
+    assert[str[o.stop] eq 'tool']
+    assert[int[o.usage.output] eq 9]
+    plain = json[_reply_openai[json['{"choices": [{"message": {"content": "Ulaanbaatar"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 21, "completion_tokens": 3}}']]]
+    assert[str[plain.text] eq 'Ulaanbaatar']
+    assert[str[plain.stop] eq 'end']
+    assert[len[plain.calls] eq 0]
+    assert[_stop_of['max_tokens'] eq 'length']
+    assert[_stop_of['length'] eq 'length']
+    assert[_stop_of['whatever'] eq 'other']
+
+--- a server's refusal is quoted from its JSON error, else from its body
+test a_refusal_quotes_the_server[]
+    assert[_refusal_of[401, '{"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}}'] eq 'the model\'s server answered 401: invalid x-api-key']
+    assert[_refusal_of[404, '{"error": "model not found"}'] eq 'the model\'s server answered 404: model not found']
+    assert[_refusal_of[502, '  bad gateway  '] eq 'the model\'s server answered 502: bad gateway']
+
+--- each provider's stream events are read into what they change
+test a_streams_events_are_read[]
+    t = _event_anthropic['event: content_block_delta\ndata: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hel"}}']
+    assert[str[t.text] eq 'Hel']
+    s = _event_anthropic['event: content_block_start\ndata: {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "weather", "input": {}}}']
+    assert[str[s.start.name] eq 'weather']
+    a = _event_anthropic['event: content_block_delta\ndata: {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "{\\"city\\""}}']
+    assert[str[a.args] eq '{"city"']
+    d = _event_anthropic['event: message_delta\ndata: {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 15}}']
+    assert[str[d.stop] eq 'end']
+    assert[int[d.output] eq 15]
+    assert[_event_anthropic['event: message_stop\ndata: {"type": "message_stop"}'].done.ok]
+    assert[int[_event_anthropic['event: message_start\ndata: {"type": "message_start", "message": {"usage": {"input_tokens": 9}}}'].input] eq 9]
+    assert[str[_event_anthropic['event: error\ndata: {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}'].error] eq 'Overloaded']
+    assert[not _event_anthropic['event: ping\ndata: {"type": "ping"}'].text.ok]
+    o = _event_openai['data: {"choices": [{"delta": {"content": "Ula"}, "finish_reason": null}]}']
+    assert[str[o.text] eq 'Ula']
+    c = _event_openai['data: {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "weather", "arguments": ""}}]}, "finish_reason": null}]}']
+    assert[str[c.start.id] eq 'call_1']
+    m = _event_openai['data: {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{\\"ci"}}]}, "finish_reason": null}]}']
+    assert[str[m.args] eq '{"ci']
+    f = _event_openai['data: {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}']
+    assert[str[f.stop] eq 'tool']
+    assert[f.end_call.ok]
+    u = _event_openai['data: {"choices": [], "usage": {"prompt_tokens": 4, "completion_tokens": 6}}']
+    assert[int[u.input] eq 4]
+    assert[_event_openai['data: [DONE]'].done.ok]
+    assert[not _event_openai[': keep-alive'].done.ok]
+
+--- chunk sizes are hex, and a size that is none is -1
+test a_chunks_size_is_hex[]
+    assert[_hex_of['1a'] eq 26]
+    assert[_hex_of['FF'] eq 255]
+    assert[_hex_of['0'] eq 0]
+    assert[_hex_of[''] eq -1]
+    assert[_hex_of['zz'] eq -1]
+    assert[_chunk_size['10;ext=1'] eq 16]
+    assert[_earliest[-1, 4] eq 4]
+    assert[_earliest[3, -1] eq 3]
+    assert[_earliest[5, 2] eq 2]

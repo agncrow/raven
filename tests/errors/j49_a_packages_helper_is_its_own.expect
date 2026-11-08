@@ -1,0 +1,3 @@
+j49_a_packages_helper_is_its_own.co:4:9: '_talk_of' is the llm package's own — a name that begins with an underscore is reached from the package's own files alone: call what it exports
+  4 │ log[llm._talk_of[llm.ask['x']]]
+    │         ^^^^^^^^

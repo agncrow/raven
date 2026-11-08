@@ -1,0 +1,22 @@
+--- llm without a model: what `reach` makes of a model's URL, and a
+--- conversation built a turn at a time — the parsed value `chat` sends,
+--- which `said` and `told` take a reply and a tool's result back into.
+--- The book (docs/book/src/llm.md) asks a model, and runs the agent loop.
+use llm
+
+m = llm.reach['openai://localhost:11434/llama3.2']
+log[m.provider]
+log[m.model]
+log[m.base]
+log[m.key]
+bad = llm.reach['ftp://somewhere']
+log[bad.reason]
+
+talk = llm.ask['What is the capital of Mongolia?']
+talk = llm.asked[talk, 'And its population?']
+r = json['{"text": "Let me check.", "calls": [{"id": "c1", "name": "lookup", "args": {"city": "Ulaanbaatar"}}], "usage": {"input": 12, "output": 7}, "stop": "tool"}']
+talk = llm.said[talk, r]
+talk = llm.told[talk, r.calls[0], '1.6 million']
+log[len[talk]]
+for turn in talk
+    log['`str[turn.role]`: `str[turn.text]`']

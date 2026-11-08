@@ -1,0 +1,13 @@
+handler chat_page_ask_model (chat/page.co)
+  wired: chat_page_render button 'Ask'
+  when (len[trim[chat_page_question]] eq 0):
+    effect notice 'ask something'
+  when (not (len[trim[chat_page_question]] eq 0)) and (not chat[chat_page_model[], ask[trim[chat_page_question]], chat_page_prompt_of[v1], [], 300, 1.0].ok) and v1.ok:
+    reads v1 = chat_retrieve_hybrid[chat_page_chunks, chat_page_embedded, chat_page_lexical, trim[chat_page_question], 3]
+    effect notice 'the model did not answer: `chat[chat_page_model[], ask[trim[chat_page_question]], chat_page_prompt_of[v1], [], 300, 1.0].reason`'
+  when (not (len[trim[chat_page_question]] eq 0)) and (not v1.ok):
+    reads v1 = chat_retrieve_hybrid[chat_page_chunks, chat_page_embedded, chat_page_lexical, trim[chat_page_question], 3]
+    effect notice 'the embedder did not answer: `v1.reason`'
+  when (not (len[trim[chat_page_question]] eq 0)) and chat[chat_page_model[], ask[trim[chat_page_question]], chat_page_prompt_of[v1], [], 300, 1.0].ok and v1.ok:
+    reads v1 = chat_retrieve_hybrid[chat_page_chunks, chat_page_embedded, chat_page_lexical, trim[chat_page_question], 3]
+    chat_page_question := '' · chat_page_turns := push[chat_page_turns, chat_page_Turn[trim[chat_page_question], str[chat[chat_page_model[], ask[trim[chat_page_question]], chat_page_prompt_of[v1], [], 300, 1.0].text], v1]]

@@ -1,0 +1,4 @@
+fact chat_page_turns (chat/page.co)
+  type: array[chat_page_Turn]
+  written by: chat_page_ask_model
+  read by: chat_page_ask_model, chat_page_render

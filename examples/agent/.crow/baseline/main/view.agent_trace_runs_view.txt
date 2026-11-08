@@ -1,0 +1,7 @@
+view agent_trace_runs_view (agent/trace.co)
+  composed on: page /runs
+  reads: agent_trace_runs
+  always:
+    stack[gap = 's']
+      h2[] 'Runs'
+      table[action 'Open' → agent_trace_open_run, hide = ['id'], key = 'id', page = 20] agent_trace_runs

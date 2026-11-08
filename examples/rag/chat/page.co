@@ -1,0 +1,105 @@
+--- The page: a question asked, the model's answer with its citations, and
+--- under it the chunks it was given, numbered as the citations name them.
+--- The conversation is the session's (`turns`); the system prompt holds
+--- the model to the chunks.
+use web, ui, llm
+use vectors.flat
+use retrieval.words, retrieval.bm25
+use chat.corpus
+use chat.retrieve
+
+struct Turn [question, answer, found]
+
+question = ''
+turns = []
+
+--- the notes' chunks, their index and their BM25 ranking: derivations that
+--- read no session's facts, so the app's — every reader shares one index,
+--- kept an hour before the notes are read and embedded again
+derive chunks[fresh = 3600]
+    return corpus.chunks_of[]
+
+derive embedded[fresh = 3600]
+    bodies = for c in chunks
+        c.body
+    return flat.index[llm.embed[corpus.embedder[], bodies]]
+
+derive lexical
+    docs = for c in chunks
+        words.tokens[c.body]
+    return bm25.build[docs]
+
+--- the model that answers, named by the environment (Ollama's by default)
+fn model[]
+    return llm.reach[env['RAG_MODEL', 'openai://127.0.0.1:11434/llama3.2']]
+
+--- the system prompt: the chunks numbered, and the instruction to answer
+--- from them alone and cite each one used
+fn prompt_of[found]
+    lines = []
+    i = 0
+    for f in found
+        i = i + 1
+        file = f.chunk.file
+        body = f.chunk.body
+        lines = push[lines, '[`i`] (`file`) `body`']
+    notes = join[lines, '\n\n']
+    head = 'Answer from the notes below and nothing else. Cite each note you use as [n]. If the notes do not answer, say so.'
+    return join[[head, notes], '\n\n']
+
+--- the question asked: its chunks found, the model's answer kept as a turn
+fn ask_model[]
+    wanted = trim[question]
+    if len[wanted] eq 0
+        notice['ask something']
+        return
+    found = retrieve.hybrid[chunks, embedded, lexical, wanted, 3]
+    if not found.ok
+        notice['the embedder did not answer: `found.reason`']
+        return
+    r = llm.chat[model[], llm.ask[wanted], system = prompt_of[found], tokens = 300]
+    if not r.ok
+        notice['the model did not answer: `r.reason`']
+        return
+    turns = push[turns, Turn[wanted, str[r.text], found]]
+    question = ''
+
+--- one note the model was given, numbered as its citation names it
+view note_view[i, f]
+    file = f.chunk.file
+    body = f.chunk.body
+    return stack[h3['[`i`] `file`'], p[body], gap = 's']
+
+view turn_view[t]
+    cited = for i in range[len[t.found]]
+        note_view[i + 1, t.found[i]]
+    return stack[h2[t.question], p[t.answer], details[summary['the notes it read'], stack[cited, gap = 'm']], gap = 'm']
+
+view render[]
+    shown = for t in turns
+        turn_view[t]
+    return stack[h1['Ask the notes'], stack[shown, gap = 'l'], row[field['Question', question, type = 'text'], button['Ask', click = ask_model, class = 'primary'], gap = 'm', align = 'end'], gap = 'l', pad = 'l']
+
+--- a question finds its chunks in the notes, and the model's answer cites
+--- them; the question field is cleared
+test a_question_is_answered_from_the_notes[]
+    a = app[render]
+    assert['Ask the notes' in html[a]]
+    assert[len[a.chunks] gt 10]
+    assert[a.chunks[0].file eq 'derivations.md']
+    change[a, 'question', 'how does a derivation stay fresh']
+    click[a, ask_model]
+    assert[len[turns] eq 1]
+    assert[turns[0].question eq 'how does a derivation stay fresh']
+    assert['[1]' in turns[0].answer]
+    assert[turns[0].found[0].chunk.file eq 'derivations.md']
+    assert['derivations.md' in html[a]]
+    assert[a.question eq '']
+
+--- an empty question asks nothing
+test an_empty_question_asks_nothing[]
+    a = app[render]
+    change[a, 'question', '   ']
+    click[a, ask_model]
+    assert[notice.text eq 'ask something']
+    assert[len[turns] eq 0]

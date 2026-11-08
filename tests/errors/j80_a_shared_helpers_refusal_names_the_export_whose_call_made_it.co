@@ -1,0 +1,17 @@
+--- a shared helper's refusal names the export whose call made the copy
+--- mistakes: 2
+--- `chat` and `act` both reach llm's helper `_body_of`; the int handed as
+--- `act`'s `system` makes a copy of the helpers whose `len` meets an int.
+--- Every refusal names `act` at its line: the valid `chat` call, which
+--- reaches the helper first, is not blamed (it had been: a copy lowered
+--- before its caller's body had no chain on record, and the first export
+--- reaching the helper answered), as crow refused it while llm was one of
+--- its standard modules.
+use llm
+
+m = llm.reach['http://127.0.0.1:1/v1']
+talk = llm.ask['hello']
+ok = llm.chat[m, talk, system = 'be brief']
+log[ok.ok]
+bad = llm.act[m, talk, system = 5]
+log[bad.ok]

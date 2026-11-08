@@ -1,0 +1,72 @@
+--- The page: a question asked, the agent's answer, the tools it called,
+--- and the steps of the run it took, read back from the trace. The
+--- handler calls the loop itself — `act` is an effect, so the handler
+--- runs off the page's loop while the model answers.
+use web, ui
+use agent.store
+use agent.support
+use agent.trace
+
+question = ''
+answer = ''
+called = ''
+
+--- the question asked: the agent runs its tools, the answer is kept and
+--- the run opened in the trace
+fn ask_agent[]
+    wanted = trim[question]
+    if len[wanted] eq 0
+        notice['ask something']
+        return
+    r = support.run[wanted]
+    if not r.ok
+        notice['the agent stopped: `r.reason`']
+        return
+    answer = r.text
+    called = join[r.tools, ', ']
+    trace.run_id = r.id
+    question = ''
+
+view answer_view[]
+    if len[answer] eq 0
+        return p['ask about an order: its status, a customer\'s orders, a refund', color = 'muted']
+    return stack[p[answer], p['tools called: `called`', color = 'muted', size = 's'], gap = 's']
+
+view render[]
+    return stack[h1['Support'], row[field['Question', question, type = 'text'], button['Ask', click = ask_agent, class = 'primary'], gap = 'm', align = 'end'], answer_view[], trace.steps_view[], a['every run', href = '/runs'], gap = 'l', pad = 'l']
+
+--- a question is answered by the agent from its tools, the answer and the
+--- tools called shown, and the run's steps under it (the model's replies
+--- replayed from the fixtures); the question field is cleared. (The steps
+--- are read as whole columns: a rehearsal's writes never land, and a
+--- test that indexed into the empty frame would stop there.)
+test a_question_is_answered_and_traced[]
+    store.setup[store.book]
+    a = app[render]
+    assert['ask about an order' in html[a]]
+    change[a, 'question', 'What is the status of order 2?']
+    click[a, ask_agent]
+    assert['shipped' in a.answer]
+    assert[ends[a.called, 'order_status']]
+    assert[a.question eq '']
+    assert[trace.run_id gt 0]
+    assert[len[trace.steps] eq 3]
+    whats = for w in trace.steps.what
+        w
+    assert[join[whats, ' '] eq 'chat tool chat']
+    names = for n in trace.steps.name
+        n
+    assert['order_status' in join[names, ' ']]
+    hows = for h in trace.steps.how
+        h
+    assert[join[hows, ' '] eq 'tool ok end']
+    assert['order_status' in html[a]]
+    assert['Run `trace.run_id`' in html[a]]
+
+--- an empty question asks nothing
+test an_empty_question_asks_nothing[]
+    a = app[render]
+    change[a, 'question', '   ']
+    click[a, ask_agent]
+    assert[notice.text eq 'ask something']
+    assert[a.answer eq '']

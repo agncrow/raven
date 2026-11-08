@@ -1,0 +1,191 @@
+--- The agent: three tools over the orders, the gate asked before a
+--- refund, the loop that answers a question, and its trace written down —
+--- a row in `runs` with the question, the model, the answer, the stop,
+--- the rounds, the tokens and the milliseconds, and a row in `steps` per
+--- step of it, the loop's own frame.
+--- The tools are plain functions — the comment above each is what the
+--- model is told of it, and a parameter is typed by what the body reads
+--- it as: an order's number arrives as text, which `trim` reads, and
+--- `int[…]` makes the number (a mask comparison types nothing). The
+--- evals at the end run the agent over the recorded fixtures, with no
+--- model, and a model-as-judge grades its answers.
+use db, llm, frame, math
+use agent.store
+use agent.judge
+
+--- what a run answered: the trace's id, the model's last words, why it
+--- ended, the rounds it took, the tools it called in order, and the
+--- loop's own frame of steps
+struct Run [id, text, stop, rounds, tools, steps]
+
+--- the model, named by the environment (a local mlx-lm server by default)
+fn model[]
+    return llm.reach[env['AGENT_MODEL', 'openai://127.0.0.1:8765/mlx-community/Ministral-3-8B-Reasoning-2512-4bit']]
+
+--- one order's row as a sentence
+fn described[found, i]
+    return 'order `int[found.id[i]]`: `str[found.item[i]]` for `str[found.customer[i]]`, `fmt[float[found.amount[i]], decimals = 2]`, `str[found.status[i]]`'
+
+--- the status of an order, by its number: what was ordered, by whom, for how much, and whether it is placed, shipped, delivered or refunded
+fn order_status[number]
+    n = int[trim[number]]
+    if not n.ok
+        return error['`number` is no order number', 'order']
+    found = store.orders[store.shop[]]
+    mine = found[found.id eq n]
+    if len[mine] eq 0
+        return error['there is no order `n`', 'order']
+    return described[mine, 0]
+
+--- the orders of a customer, by name: each order's number, item, amount and status
+fn search_orders[customer]
+    found = store.orders[store.shop[]]
+    theirs = found[lower[found.customer] eq lower[trim[customer]]]
+    if len[theirs] eq 0
+        return 'no orders for `trim[customer]`'
+    lines = for i in range[len[theirs]]
+        described[theirs, i]
+    return join[lines, '; ']
+
+--- refund an order by its number: the money goes back to the customer and the order's status becomes refunded
+fn refund[number]
+    n = int[trim[number]]
+    if not n.ok
+        return error['`number` is no order number', 'order']
+    c = store.shop[]
+    found = store.orders[c]
+    mine = found[found.id eq n]
+    if len[mine] eq 0
+        return error['there is no order `n`', 'order']
+    if str[mine.status[0]] ne 'placed'
+        return error['order `n` is `str[mine.status[0]]`, and only a placed order is refunded', 'order']
+    query[c, 'UPDATE orders SET status = ? WHERE id = ?', ['refunded', n]]
+    return 'order `n` refunded: `fmt[float[mine.amount[0]], decimals = 2]` goes back to `str[mine.customer[0]]`'
+
+--- the gate, asked before every tool runs: a refund is allowed for an
+--- order that has not shipped and is under 100; every other call is
+--- allowed, and a number that names no order is left to the tool to say
+fn refund_allowed[call]
+    if str[call.name] ne 'refund'
+        return true
+    n = int[str[call.args.number]]
+    if not n.ok
+        return true
+    found = store.orders[store.shop[]]
+    mine = found[found.id eq n]
+    if len[mine] eq 0
+        return true
+    return str[mine.status[0]] eq 'placed' and float[mine.amount[0]] lt 100.0
+
+--- a run written down: its row in runs, and its steps' rows, each with
+--- the run's id; the id
+fn record[c, question, used, done]
+    total = sum[done.steps.ms]
+    row = query[c, 'INSERT INTO runs (at, question, model, answer, stop, rounds, input, output, ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id', [str[now[]], question, used, done.text, done.stop, done.rounds, int[done.usage.input], int[done.usage.output], total]]
+    id = int[row.id[0]]
+    steps = done.steps
+    steps.run = id
+    insert[c, 'steps', steps]
+    return id
+
+--- the tools a run called, in order
+fn tools_of[steps]
+    called = for n in steps.name[steps.what eq 'tool']
+        n
+    return called
+
+--- the question answered by the model with its tools — at most six
+--- rounds — and the run written as a trace; the model's refusal is the
+--- call's error. (The system prompt is written in the call: handed as a
+--- local or a function's answer, the compiled program does not build —
+--- the loop's `system` is a value that can fail inside the module, and
+--- the lowering wraps a literal where it hands a local bare; a bug in
+--- Crow, reported with the example.)
+fn run[question]
+    m = model[]
+    done = llm.act[m, llm.ask[question], tools = [order_status, search_orders, refund], allow = [refund_allowed], rounds = 6, system = 'You are the support agent of a small shop. Answer questions about orders with the tools: order_status for one order by its number, search_orders for a customer\'s orders, refund to refund an order. Call a tool once, then answer in one or two plain sentences, naming the order and its status. When a refund is refused, say so and why, and do not try again.', temperature = 0.0]
+    if not done.ok
+        return error[done.reason, 'llm']
+    id = record[store.shop[], question, str[m.model], done]
+    return Run[id, str[done.text], str[done.stop], done.rounds, tools_of[done.steps], done.steps]
+
+--- the tools answer from the orders: a status, a customer's orders, a
+--- refund of a placed order, and the refusals each says
+test the_tools_answer_from_the_orders[]
+    store.setup[store.book]
+    assert[order_status['2'] eq 'order 2: a lamp for Bob, 65.00, shipped']
+    assert[order_status[' 4 '] eq 'order 4: headphones for Cy, 80.00, delivered']
+    assert[order_status['9'].reason eq 'there is no order 9']
+    assert[order_status['nine'].reason eq 'nine is no order number']
+    assert[search_orders['ada'] eq 'order 1: a kettle for Ada, 40.00, placed; order 3: a desk for Ada, 250.00, placed']
+    assert[search_orders['Zed'] eq 'no orders for Zed']
+    assert[refund['2'].reason eq 'order 2 is shipped, and only a placed order is refunded']
+    assert[refund['1'] eq 'order 1 refunded: 40.00 goes back to Ada']
+    assert[order_status['1'] eq 'order 1: a kettle for Ada, 40.00, refunded']
+    assert[refund['1'].kind eq 'order']
+
+--- the gate lets every call through but a refund of an order that has
+--- shipped or costs 100 or more
+test the_gate_refuses_a_shipped_or_a_large_refund[]
+    store.setup[store.book]
+    assert[refund_allowed[json['{"id": "c1", "name": "order_status", "args": {"number": "2"}}']]]
+    assert[refund_allowed[json['{"id": "c2", "name": "refund", "args": {"number": "1"}}']]]
+    assert[not refund_allowed[json['{"id": "c3", "name": "refund", "args": {"number": 2}}']]]
+    assert[not refund_allowed[json['{"id": "c4", "name": "refund", "args": {"number": "3"}}']]]
+    assert[refund_allowed[json['{"id": "c5", "name": "refund", "args": {"number": "9"}}']]]
+    assert[refund_allowed[json['{"id": "c6", "name": "refund", "args": {"number": "nine"}}']]]
+
+--- the agent looks an order up and says its status; the judge agrees
+test the_status_of_an_order_is_answered[]
+    store.setup[store.book]
+    r = run['What is the status of order 2?']
+    assert[r.ok]
+    assert[r.stop eq 'end']
+    assert[r.tools eq ['order_status']]
+    assert['shipped' in lower[r.text]]
+    assert[judge.graded[model[], 'What is the status of order 2?', r.text, 'The answer says that order 2 has shipped.']]
+
+--- a refund the gate refuses is told to the model as a refusal, the order
+--- is untouched, and the agent says it could not refund it
+test a_refund_over_the_limit_is_refused[]
+    store.setup[store.book]
+    r = run['Please refund order 3.']
+    assert[r.ok]
+    assert[r.stop eq 'end']
+    assert['refund' in r.tools]
+    hows = for h in r.steps.how[r.steps.name eq 'refund']
+        h
+    assert[hows[0] eq 'refused']
+    assert[store.orders[store.book].status[2] eq 'placed']
+    assert[judge.graded[model[], 'Please refund order 3.', r.text, 'The answer says that order 3 was not refunded, or that the refund was refused or not allowed.']]
+
+--- a refund the gate allows runs: the order is refunded, and the agent
+--- says so
+test a_small_refund_goes_through[]
+    store.setup[store.book]
+    r = run['Refund order 1.']
+    assert[r.ok]
+    assert[r.stop eq 'end']
+    assert['refund' in r.tools]
+    hows = for h in r.steps.how[r.steps.name eq 'refund']
+        h
+    assert[hows[0] eq 'ok']
+    assert[store.orders[store.book].status[0] eq 'refunded']
+    assert[judge.graded[model[], 'Refund order 1.', r.text, 'The answer confirms that order 1 was refunded.']]
+
+--- a customer's orders are found by name, and the trace holds a row per
+--- step with the tokens the model read and wrote
+test a_customers_orders_are_found[]
+    store.setup[store.book]
+    r = run['Which orders does Ada have?']
+    assert[r.ok]
+    assert[r.tools eq ['search_orders']]
+    assert['kettle' in lower[r.text]]
+    assert['desk' in lower[r.text]]
+    assert[len[r.steps] eq 3]
+    assert[r.steps.what[0] eq 'chat']
+    assert[r.steps.what[1] eq 'tool']
+    assert[r.steps.what[2] eq 'chat']
+    assert[r.steps.input[0] gt 0]
+    assert[r.steps.how[2] eq 'end']
+    assert[judge.graded[model[], 'Which orders does Ada have?', r.text, 'The answer names two orders of Ada: a kettle and a desk.']]

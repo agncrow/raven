@@ -1,0 +1,5 @@
+fact chat_page_question (chat/page.co)
+  type: str
+  written by: chat_page_ask_model
+  bound by: chat_page_render
+  read by: chat_page_ask_model, chat_page_render

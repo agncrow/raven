@@ -1,0 +1,82 @@
+--- The traces read back: the page over the runs the agent wrote down
+--- (agent/support.co: a row in `runs` per run, a row in `steps` per step
+--- of it) — the runs newest first, the steps of the one opened, and the
+--- tokens and the latency of each run charted.
+use web, ui, db
+use agent.store
+use agent.support
+
+book = db.connect['sqlite://agent.db']
+run_id = 0
+
+derive runs
+    return query[book, 'SELECT id, at, question, stop, rounds, input, output, ms FROM runs ORDER BY id DESC']
+
+derive steps
+    return query[book, 'SELECT step, what, name, input, output, ms, how FROM steps WHERE run = ? ORDER BY step', [run_id]]
+
+--- the runs oldest first, their moments read, for the charts
+derive spent
+    r = query[book, 'SELECT id, at, input, output, ms FROM runs ORDER BY id']
+    r.at = moment[r.at]
+    return r
+
+fn open_run[id]
+    run_id = id
+
+--- the tokens each run read and wrote, and the milliseconds it took
+view charts_view[]
+    if len[spent] eq 0
+        return p['no runs yet', color = 'muted']
+    return row[chart[spent, x = 'at', lines = ['input', 'output'], height = 200], chart[spent, x = 'at', lines = ['ms'], height = 200], gap = 'm']
+
+view runs_view[]
+    return stack[h2['Runs'], table[runs, key = 'id', actions = map[Open = open_run], hide = ['id'], page = 20], gap = 's']
+
+--- the steps of the run open: a row per model call and tool call, with
+--- its tokens, its milliseconds and how it went
+view steps_view[]
+    if run_id eq 0
+        return p['open a run to see its steps', color = 'muted']
+    return stack[h2['Run `run_id`'], table[steps, key = 'step'], gap = 's']
+
+view render[]
+    return stack[h1['Agent runs'], charts_view[], runs_view[], steps_view[], a['ask the agent', href = '/'], gap = 'l', pad = 'l']
+
+--- a run is listed newest first with its question, and opening it shows
+--- its steps — a row per model call and tool call — and the charts draw
+--- (the model's replies replayed from the fixtures). (The rows are read
+--- as whole columns: a rehearsal's writes never land, and a test that
+--- indexed into the empty frame would stop there.)
+test a_run_is_listed_and_opened[]
+    store.setup[store.book]
+    r = support.run['What is the status of order 2?']
+    assert[r.ok]
+    a = app[render]
+    newest = for i in head[a.runs, 1].id
+        i
+    assert[newest eq push[[], r.id]]
+    asked = for q in head[a.runs, 1].question
+        q
+    assert[asked eq ['What is the status of order 2?']]
+    stops = for s in head[a.runs, 1].stop
+        s
+    assert[stops eq ['end']]
+    rounds = for n in head[a.runs, 1].rounds
+        n
+    assert[rounds eq push[[], 2]]
+    assert[len[a.steps] eq 0]
+    assert['open a run to see its steps' in html[a]]
+    assert['<svg' in html[a]]
+    click[a, open_run[r.id]]
+    assert[len[a.steps] eq 3]
+    whats = for w in a.steps.what
+        w
+    assert[join[whats, ' '] eq 'chat tool chat']
+    names = for n in a.steps.name
+        n
+    assert['order_status' in join[names, ' ']]
+    hows = for h in a.steps.how
+        h
+    assert[join[hows, ' '] eq 'tool ok end']
+    assert['Run `r.id`' in html[a]]

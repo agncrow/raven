@@ -1,0 +1,33 @@
+--- A model as the judge of an answer: asked to grade it against a rubric
+--- and to say PASS or FAIL on its first line, which `verdict` reads. The
+--- evals (agent/support.co) replay the judge's replies from the recorded
+--- fixtures, as they replay the agent's.
+use llm
+
+--- the grader's verdict read from its reply: PASS on the first line, and
+--- nothing else, passes
+fn verdict[words]
+    lines = split[trim[words], '\n']
+    if len[lines] eq 0
+        return false
+    first = upper[trim[lines[0]]]
+    return starts[first, 'PASS']
+
+--- whether a model grades the answer as meeting the rubric: told the
+--- question, the answer and the rubric, and how to reply; the model's
+--- refusal is the call's error
+fn graded[m, question, answer, rubric]
+    asking = 'Question: `question`\nAnswer: `answer`\nRubric: `rubric`\n\nDoes the answer meet the rubric? Reply with PASS or FAIL on the first line, then one sentence why.'
+    r = llm.chat[m, llm.ask[asking], system = 'You grade a support agent\'s answers against a rubric, strictly. Reply with PASS or FAIL on the first line, then one sentence why.', tokens = 400, temperature = 0.0]
+    if not r.ok
+        return error[r.reason, 'llm']
+    return verdict[str[r.text]]
+
+--- a verdict is PASS on the first line: anything else, a FAIL or a
+--- hedge, fails
+test a_verdict_is_read_from_the_first_line[]
+    assert[verdict['PASS\nThe answer names the status.']]
+    assert[verdict['  pass — it says the order shipped']]
+    assert[not verdict['FAIL\nIt names no status.']]
+    assert[not verdict['The answer is fine. PASS']]
+    assert[not verdict['']]

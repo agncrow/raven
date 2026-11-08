@@ -1,0 +1,3 @@
+reach agent/store.co
+  db.read: connect, query
+  db.write: query

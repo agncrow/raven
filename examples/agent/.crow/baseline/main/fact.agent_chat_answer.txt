@@ -1,0 +1,4 @@
+fact agent_chat_answer (agent/chat.co)
+  type: str
+  written by: agent_chat_ask_agent
+  read by: agent_chat_answer_view, agent_chat_render

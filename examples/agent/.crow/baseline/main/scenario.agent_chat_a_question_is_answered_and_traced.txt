@@ -1,0 +1,27 @@
+scenario agent_chat_a_question_is_answered_and_traced (agent/chat.co)
+  ran to its end
+  wrote:
+    sqlite://agent.db CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, customer TEXT NOT NULL, item TEXT NOT NULL, amount REAL NOT NULL, status TEXT NOT NULL)
+    sqlite://agent.db CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY, at TEXT NOT NULL, question TEXT NOT NULL, model TEXT NOT NULL, answer TEXT NOT NULL, stop TEXT NOT NULL, rounds INTEGER NOT N…
+    sqlite://agent.db CREATE TABLE IF NOT EXISTS steps (run INTEGER NOT NULL, step INTEGER NOT NULL, what TEXT NOT NULL, name TEXT NOT NULL, input INTEGER NOT NULL, output INTEGER NOT NULL, ms REAL NOT NU…
+    sqlite://agent.db INSERT OR REPLACE INTO orders (id, customer, item, amount, status) VALUES (1, 'Ada', 'a kettle', 40.0, 'placed')
+    sqlite://agent.db INSERT OR REPLACE INTO orders (id, customer, item, amount, status) VALUES (2, 'Bob', 'a lamp', 65.0, 'shipped')
+    sqlite://agent.db INSERT OR REPLACE INTO orders (id, customer, item, amount, status) VALUES (3, 'Ada', 'a desk', 250.0, 'placed')
+    sqlite://agent.db INSERT OR REPLACE INTO orders (id, customer, item, amount, status) VALUES (4, 'Cy', 'headphones', 80.0, 'delivered')
+    sqlite://agent.db INSERT OR REPLACE INTO orders (id, customer, item, amount, status) VALUES (5, 'Bob', 'a chair', 120.0, 'placed')
+    request["http://127.0.0.1:8765/v1/chat/completions", "POST", "{\"model\": \"mlx-community/Ministral-3-8B-Reasoning-2512-4bit\", \"max_tokens\": 1024", headers = [content-type = 'application/json'], ti…
+    request["http://127.0.0.1:8765/v1/chat/completions", "POST", "{\"model\": \"mlx-community/Ministral-3-8B-Reasoning-2512-4bit\", \"max_tokens\": 1024", headers = [content-type = 'application/json'], ti…
+    sqlite://agent.db INSERT INTO runs (at, question, model, answer, stop, rounds, input, output, ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id ["2026-01-01","What is the status of order 2?","mlx-co…
+    sqlite://agent.db INSERT INTO runs (at, question, model, answer, stop, rounds, input, output, ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id ["2026-01-01","What is the status of order 2?","mlx-co…
+    sqlite://agent.db insert into steps (3 rows: step, what, name, input, output, ms, how, run)
+  answered with generated rows:
+    INSERT INTO runs (at, question, model, answer, stop, rounds, input, output, ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+  did not hold on rehearsal data:
+    test:53: 0 eq 3
+    test:56:  eq chat tool chat
+    test:59: assertion failed
+    test:62:  eq tool ok end
+  changed:
+    agent_trace_run_id = 1
+    answer = Order 2 is a lamp for Bob, and it has been shipped.
+    called = agent_support_order_status

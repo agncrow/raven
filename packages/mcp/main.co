@@ -1,0 +1,584 @@
+--- `use mcp`: tools from other programs, and a Crow program as one — the
+--- Model Context Protocol, revision 2026-07-28 (stateless: every request
+--- carries its protocol version and the client's capabilities in `_meta`),
+--- over its two transports — Streamable HTTP, one POST per message, and
+--- stdio, a process the program starts and talks to line by line —
+--- written in Crow on `request` and the sys layer. A package, called
+--- qualified. A client: `mcp.server[url]` names an MCP endpoint and
+--- `server[command = …]` the command that runs a server over its standard
+--- streams, `discover[s]` asks its versions and capabilities, `catalog[s]`
+--- lists its tools (each its `name`, `description` and `inputSchema`),
+--- `tool[s, name, args]` calls one and answers its text. A server:
+--- `answer[req, tools = [f, g]]` in a POST route, and `listen[tools = [f,
+--- g]]` over the program's own standard streams, answer
+--- `server/discover`, `tools/list` and `tools/call` over the functions
+--- themselves (`describe` and `apply`, sys), as llm's loop calls them. The
+--- tests are the package's own (`crow test packages/mcp/main.co`), and
+--- tests/mcp.py drives a Crow client against a stand-in server, a stand-in
+--- client against a Crow server, and a Crow client against a Crow server
+--- over stdio, in both modes. The design is docs/agents-design.md.
+use sys, web
+
+--- the protocol revision spoken, and this implementation's name
+fn _version[]
+    return '2026-07-28'
+
+fn _implementation[]
+    return '{"name": "crow", "version": "0.7.0"}'
+
+--- the `_meta` every request carries: the version, who asks, what it can
+fn _meta[]
+    return '{"io.modelcontextprotocol/protocolVersion": "`_version[]`", "io.modelcontextprotocol/clientInfo": `_implementation[]`, "io.modelcontextprotocol/clientCapabilities": {}}'
+
+--- the `_meta` a result carries: who answers
+fn _answered_by[name]
+    return '{"io.modelcontextprotocol/serverInfo": {"name": `encode[name]`, "version": "0.7.0"}}'
+
+--- a request's params as JSON text with the `_meta` added
+fn _with_meta[params]
+    if len[trim[params]] lte 2
+        return '{"_meta": `_meta[]`}'
+    rest = slice[trim[params], 1, len[trim[params]]]
+    return '{"_meta": `_meta[]`, `rest`'
+
+--- text cut short for a message
+fn _cut[words]
+    shown = trim[words]
+    if len[shown] gt 200
+        return '`slice[shown, 0, 200]`…'
+    return shown
+
+--- ── the client ──────────────────────────────────────────────────────
+
+--- `server[url = '', token = '', command = '']`: an MCP server as a
+--- connection — the URL of its MCP endpoint, and the bearer token its
+--- requests carry, if any; or the command that runs it over its standard
+--- streams (the stdio transport), as `shell` runs a command — a parsed
+--- value: `s.url`, `s.token`, `s.command`. A command's process starts at
+--- the first message, and is kept while the thread that started it lives
+--- (one per command on each thread: a served program's handlers never
+--- share one).
+fn server[url = '', token = '', command = '']
+    if len[command] gt 0
+        if len[url] gt 0
+            return error['an MCP server is reached at its endpoint\'s URL or started as a command, not both: `url` and `command`', 'mcp']
+        if len[token] gt 0
+            return error['a bearer token goes to an endpoint\'s URL: a server started as a command takes none', 'mcp']
+        return json['{"url": "", "token": "", "command": `encode[command]`}']
+    if len[url] eq 0
+        return error['an MCP server is reached at its endpoint\'s URL — server[\'http://localhost:8000/mcp\'] — or started as a command: server[command = \'npx -y @modelcontextprotocol/server-everything\']', 'mcp']
+    if not (starts[url, 'http://'] or starts[url, 'https://'])
+        return error['an MCP server is reached at its endpoint\'s URL: `url` is none — http://localhost:8000/mcp — or started as a command: server[command = \'npx -y @modelcontextprotocol/server-everything\']', 'mcp']
+    return json['{"url": `encode[url]`, "token": `encode[token]`, "command": ""}']
+
+--- a server's description as a program hands it — what `server` answered
+fn _server_of[s]
+    if type[s] ne 'map' or not s.url.ok
+        return error['an MCP server is what server[…] answers', 'mcp']
+    return s
+
+--- the command a server's description names, or empty for an endpoint
+fn _command_of[s]
+    if not s.command.ok
+        return ''
+    return str[s.command]
+
+--- the JSON-RPC message a response carries — its status, its content
+--- type and its body: the body's JSON, or, in a stream of events, the
+--- last event holding a result or an error (the notifications before it
+--- are the request's own)
+fn _message_of[status, kind, body]
+    if starts[kind, 'text/event-stream']
+        last = json['{}']
+        for event in split[replace[body, '\r\n', '\n'], '\n\n']
+            data = []
+            for line in split[event, '\n']
+                if starts[line, 'data:']
+                    data = push[data, trim[slice[line, 5, len[line]]]]
+            if len[data] gt 0
+                j = json[join[data, '\n']]
+                if j.ok
+                    if j.result.ok or j.error.ok
+                        last = j
+        if not last.result.ok and not last.error.ok
+            return error['the MCP server\'s stream ended with no response', 'mcp']
+        return last
+    j = json[body]
+    if not j.ok
+        if status lt 200 or status gte 300
+            return error['the MCP server answered `status`: `_cut[body]`', 'mcp']
+        return error['the MCP server answered no JSON: `_cut[body]`', 'mcp']
+    return j
+
+--- a request sent — the method, its params as JSON text, and the name
+--- the Mcp-Name header carries for a call — and the result read back; an
+--- error of kind mcp where none came, or the server answered one. Over
+--- stdio the message goes to the server's process as a line; over HTTP
+--- as a POST with the headers the transport mirrors from the body.
+fn _sent[s, method, params, named]
+    command = _command_of[s]
+    if len[command] gt 0
+        return _sent_over_stdio[command, method, params]
+    body = '{"jsonrpc": "2.0", "id": 1, "method": `encode[method]`, "params": `_with_meta[params]`}'
+    h = map[]
+    h = set[h, 'content-type', 'application/json']
+    h = set[h, 'accept', 'application/json, text/event-stream']
+    h = set[h, 'mcp-protocol-version', _version[]]
+    h = set[h, 'mcp-method', method]
+    if len[named] gt 0
+        h = set[h, 'mcp-name', named]
+    token = str[s.token]
+    if len[token] gt 0
+        h = set[h, 'authorization', 'Bearer `token`']
+    r = request[str[s.url], 'POST', body, headers = h, timeout = 600]
+    if not r.ok
+        return error['cannot reach the MCP server: `r.reason`', 'mcp']
+    kind = ''
+    if 'content-type' in r.headers
+        kind = lower[r.headers['content-type']]
+    message = _message_of[r.status, kind, r.body]
+    if not message.ok
+        return error[message.reason, 'mcp']
+    if message.error.ok
+        return error['the MCP server answered an error `str[message.error.code]`: `str[message.error.message]`', 'mcp']
+    if not message.result.ok
+        return error['the MCP server answered no result', 'mcp']
+    return message.result
+
+--- ── the stdio transport ─────────────────────────────────────────────
+
+--- the process the command names — started under this program at the
+--- first message, as the protocol's client launches its server, or the
+--- one running from an earlier message (`start`, sys: one process per
+--- command on each thread, started again once it ended, as the transport says a client
+--- restarts a server that exited) — a socket: its stream is written (the
+--- server's input) and read (its output), and what a read took past a
+--- line's end stays with the socket for the next
+fn _process_of[command]
+    p = start[command]
+    if not p.ok
+        return error['cannot start the MCP server `command`: `p.reason`', 'mcp']
+    return p
+
+--- the next line the process writes — to its line break, a `\r` before
+--- it dropped, the rest kept for the next read — waiting at most the
+--- seconds for each piece; the reason where none comes: the process
+--- ended (its output closed), or nothing came in time
+fn _line_of[p, secs]
+    st = stream_of[p]
+    have = leftover[p]
+    cut = find[have, bytes['\n']]
+    while cut lt 0
+        got = recv[st, 65536, secs]
+        if not got.ok
+            unread[p, have]
+            return error[got.reason, 'mcp']
+        if len[got] eq 0
+            return error['the process ended', 'mcp']
+        have = concat[have, got]
+        cut = find[have, bytes['\n']]
+    if cut + 1 lt len[have]
+        unread[p, slice[have, cut + 1, len[have]]]
+    return trim[text[slice[have, 0, cut], '�']]
+
+--- the next request id on the process, counted on its stream's notes: a
+--- response is matched to its request by it, so a late answer to an
+--- earlier request (one whose wait ran out) is passed over
+fn _next_id[p]
+    st = stream_of[p]
+    n = 0
+    last = noted[st, 'mcp.id']
+    if len[last] gt 0
+        parsed = int[last]
+        if parsed.ok
+            n = parsed
+    next = n + 1
+    note[st, 'mcp.id', '`next`']
+    return next
+
+--- a request sent to the server's process as one line, and its response
+--- read: the line carrying the request's id — a notification, and any
+--- other id, passed over — its result, or the error the server answered;
+--- an error of kind mcp where the process could not start, ended, wrote
+--- a line that is no message, or answered nothing in ten minutes
+fn _sent_over_stdio[command, method, params]
+    p = _process_of[command]
+    if not p.ok
+        return error[p.reason, 'mcp']
+    id = _next_id[p]
+    body = '{"jsonrpc": "2.0", "id": `id`, "method": `encode[method]`, "params": `_with_meta[params]`}'
+    sent = send[stream_of[p], bytes['`body`\n']]
+    if not sent.ok
+        return error['cannot reach the MCP server `command`: `sent.reason`', 'mcp']
+    while true
+        line = _line_of[p, 600.0]
+        if not line.ok
+            return error['cannot reach the MCP server `command`: `line.reason`', 'mcp']
+        if len[line] gt 0
+            message = json[line]
+            if not message.ok
+                return error['the MCP server `command` wrote a line that is no JSON message: `_cut[line]`', 'mcp']
+            if message.id.ok
+                if str[message.id] eq str[id]
+                    if message.error.ok
+                        return error['the MCP server answered an error `str[message.error.code]`: `str[message.error.message]`', 'mcp']
+                    if not message.result.ok
+                        return error['the MCP server answered no result', 'mcp']
+                    return message.result
+
+--- `discover[s]`: what the server says of itself — `supportedVersions`,
+--- `capabilities`, its `instructions` for a model, and who it is under
+--- `_meta` — a parsed value
+fn discover[s]
+    checked = _server_of[s]
+    if not checked.ok
+        return error[checked.reason, 'mcp']
+    return _sent[s, 'server/discover', '{}', '']
+
+--- `catalog[s]`: the tools the server offers, a parsed value list — each
+--- its `name`, `description` and `inputSchema`
+fn catalog[s]
+    checked = _server_of[s]
+    if not checked.ok
+        return error[checked.reason, 'mcp']
+    result = _sent[s, 'tools/list', '{}', '']
+    if not result.ok
+        return error[result.reason, 'mcp']
+    if not result.tools.ok
+        return error['the MCP server listed no tools', 'mcp']
+    return result.tools
+
+--- the text a result's content blocks carry, joined
+fn _content_text[result]
+    words = []
+    if result.content.ok
+        for block in result.content
+            if block.type.ok and str[block.type] eq 'text'
+                words = push[words, str[block.text]]
+    return join[words, '\n']
+
+--- `tool[s, name, given]`: a tool of the server's called with its
+--- arguments — a map, or a parsed value — answering the text its result
+--- carries; a result the server marks an error is an error value of kind
+--- mcp saying what it said, as is a tool the server does not have
+fn tool[s, name, given]
+    checked = _server_of[s]
+    if not checked.ok
+        return error[checked.reason, 'mcp']
+    result = _sent[s, 'tools/call', '{"name": `encode[name]`, "arguments": `encode[given]`}', name]
+    if not result.ok
+        return error[result.reason, 'mcp']
+    words = _content_text[result]
+    if result.isError.ok
+        if result.isError
+            return error[words, 'mcp']
+    return words
+
+--- ── the server ──────────────────────────────────────────────────────
+
+--- the JSON schema of a kind, by the word errors use for it (as `use
+--- llm` writes a tool's schema for a model: a helper is a package's own)
+fn _json_type[word]
+    if word eq 'an int'
+        return '{"type": "integer"}'
+    if word eq 'a number' or word eq 'a decimal' or word eq 'a fraction'
+        return '{"type": "number"}'
+    if word eq 'text' or word eq 'a moment' or word eq 'markup' or word eq 'bytes'
+        return '{"type": "string"}'
+    if word eq 'a bool'
+        return '{"type": "boolean"}'
+    if word eq 'a JSON value' or word eq 'a map' or word eq 'a record' or word eq 'a value'
+        return '{"type": "object"}'
+    if word eq 'numbers' or word eq 'a list of numbers'
+        return '{"type": "array", "items": {"type": "number"}}'
+    if word eq 'a list of ints'
+        return '{"type": "array", "items": {"type": "integer"}}'
+    if word eq 'a list of text'
+        return '{"type": "array", "items": {"type": "string"}}'
+    if word eq 'a list of bools'
+        return '{"type": "array", "items": {"type": "boolean"}}'
+    if word eq 'a list' or word eq 'a list of records' or word eq 'a list of maps'
+        return '{"type": "array", "items": {"type": "object"}}'
+    return error['no schema for `word`', 'mcp']
+
+--- a tool as `tools/list` says it, from the function's description: its
+--- name, its comment, and its parameters as the input schema, every one
+--- required
+fn _tool_listed[d]
+    properties = []
+    required = []
+    for p in d.params
+        kind = _json_type[str[p.takes]]
+        if not kind.ok
+            return error['the parameter `str[p.name]` of `str[d.name]` takes `str[p.takes]`, which a client cannot hand it: a tool takes numbers, text, bools, lists, maps, records and parsed values', 'mcp']
+        properties = push[properties, '`encode[str[p.name]]`: `kind`']
+        required = push[required, encode[str[p.name]]]
+    props = join[properties, ', ']
+    req = join[required, ', ']
+    return '{"name": `encode[str[d.name]]`, "description": `encode[str[d.doc]]`, "inputSchema": {"type": "object", "properties": {`props`}, "required": [`req`]}}'
+
+--- a JSON-RPC error response as text, for the request's id (`null` where
+--- it had none that could be read)
+fn _error_text[id, code, message]
+    return '{"jsonrpc": "2.0", "id": `id`, "error": {"code": `code`, "message": `encode[message]`}}'
+
+--- a JSON-RPC result response as text
+fn _result_text[id, result]
+    return '{"jsonrpc": "2.0", "id": `id`, "result": `result`}'
+
+--- a response of JSON, 200
+fn _json_response[body]
+    return binary[bytes[body], 'application/json']
+
+--- the request's id as JSON text: a number or text, or null
+fn _id_of[message]
+    if not message.id.ok
+        return 'null'
+    return encode[message.id]
+
+--- a tool's result as `tools/call` answers it: the text of the value, or
+--- a failure said in words and marked an error, which a model can read
+--- and try another way
+fn _call_result[tools, name, given]
+    for t in tools
+        if str[describe[t].name] eq name
+            out = apply[t, given]
+            if not out.ok
+                return '{"resultType": "complete", "content": [{"type": "text", "text": `encode[out.reason]`}], "isError": true}'
+            parsed = json[out]
+            words = out
+            if parsed.ok
+                if type[parsed] eq 'str'
+                    words = str[parsed]
+            return '{"resultType": "complete", "content": [{"type": "text", "text": `encode[words]`}], "isError": false}'
+    return ''
+
+--- a message's answer: the status an HTTP response carries (200 with a
+--- JSON-RPC message, 202 with nothing for a notification, 400, 404 or 500
+--- with the error), and the body — what both transports write
+struct Answered [status, body]
+
+--- a message answered as an MCP server over the functions, whichever
+--- transport brought it: the body's JSON-RPC message; the metadata the
+--- transport mirrors (an HTTP request's `MCP-Protocol-Version`,
+--- `Mcp-Method` and `Mcp-Name` headers, checked against the body when
+--- `mirrored`; stdio has no header layer, so nothing is checked there)
+fn _answered[sent_text, header_version, header_method, header_name, mirrored, tools, name, instructions]
+    message = json[sent_text]
+    if not message.ok
+        return Answered[400, _error_text['null', -32700, 'the body is no JSON']]
+    id = _id_of[message]
+    if not message.method.ok
+        return Answered[400, _error_text[id, -32600, 'the request names no method']]
+    method = str[message.method]
+    if not message.id.ok
+        return Answered[202, '']
+    meta = message.params['_meta']
+    if not meta.ok or not meta['io.modelcontextprotocol/protocolVersion'].ok or not meta['io.modelcontextprotocol/clientCapabilities'].ok
+        --- (a legacy client opens with `initialize`, and has no way forward
+        --- but the words of this error: the versions spoken are named, as
+        --- the revision asks)
+        if method eq 'initialize'
+            return Answered[400, _error_text[id, -32602, 'initialize is the handshake of the revisions before `_version[]`: this server speaks `_version[]`, where a request carries its protocol version and the client\'s capabilities in _meta']]
+        return Answered[400, _error_text[id, -32602, 'a request carries its protocol version and the client\'s capabilities in _meta']]
+    asked_version = str[meta['io.modelcontextprotocol/protocolVersion']]
+    if asked_version ne _version[]
+        return Answered[400, '{"jsonrpc": "2.0", "id": `id`, "error": {"code": -32022, "message": "Unsupported protocol version", "data": {"supported": ["`_version[]`"], "requested": `encode[asked_version]`}}}']
+    if mirrored
+        if header_version ne asked_version or header_method ne method
+            return Answered[400, _error_text[id, -32020, 'Header mismatch: MCP-Protocol-Version and Mcp-Method must match the body']]
+    served = _answered_by[name]
+    if method eq 'server/discover'
+        said = ', "instructions": `encode[instructions]`'
+        if len[instructions] eq 0
+            said = ''
+        return Answered[200, _result_text[id, '{"resultType": "complete", "supportedVersions": ["`_version[]`"], "capabilities": {"tools": {}}, "_meta": `served``said`, "ttlMs": 3600000, "cacheScope": "public"}']]
+    if method eq 'tools/list'
+        listed = []
+        for t in tools
+            one = _tool_listed[describe[t]]
+            if not one.ok
+                return Answered[500, _error_text[id, -32603, one.reason]]
+            listed = push[listed, one]
+        glued = join[listed, ', ']
+        return Answered[200, _result_text[id, '{"resultType": "complete", "tools": [`glued`], "_meta": `served`, "ttlMs": 60000, "cacheScope": "public"}']]
+    if method eq 'tools/call'
+        if not message.params.name.ok
+            return Answered[400, _error_text[id, -32602, 'tools/call names the tool']]
+        called = str[message.params.name]
+        if mirrored
+            if header_name ne called
+                return Answered[400, _error_text[id, -32020, 'Header mismatch: Mcp-Name must match the tool called']]
+        given = json['{}']
+        if message.params.arguments.ok
+            given = message.params.arguments
+        result = _call_result[tools, called, given]
+        if len[result] eq 0
+            return Answered[200, _error_text[id, -32602, 'Unknown tool: `called`']]
+        return Answered[200, _result_text[id, '`slice[result, 0, len[result] - 1]`, "_meta": `served`}']]
+    return Answered[404, _error_text[id, -32601, 'Method not found: `method`']]
+
+--- `answer[req, tools = [f, g], name = 'crow', instructions = '']`: the
+--- request a POST route was handed, answered as an MCP server over the
+--- functions themselves — `server/discover` with the versions, the
+--- capabilities and the instructions, `tools/list` with each tool's
+--- schema from its description, `tools/call` with the tool applied by
+--- name and its result's text (a failure marked an error); a notification
+--- is accepted with 202, a body that is no JSON, a request missing its
+--- `_meta` or its headers, or one of another protocol version refused
+--- with 400 and the JSON-RPC error the protocol names, an unknown method
+--- with 404
+fn answer[req, tools = [], name = 'crow', instructions = '']
+    header_version = ''
+    if 'mcp-protocol-version' in req.headers
+        header_version = req.headers['mcp-protocol-version']
+    header_method = ''
+    if 'mcp-method' in req.headers
+        header_method = req.headers['mcp-method']
+    header_name = ''
+    if 'mcp-name' in req.headers
+        header_name = req.headers['mcp-name']
+    got = _answered[req.body, header_version, header_method, header_name, true, tools, name, instructions]
+    if got.status eq 200
+        return _json_response[got.body]
+    return respond[got.status, got.body]
+
+--- `listen[tools = [f, g], name = 'crow', instructions = '']`: the
+--- program as an MCP server over its own standard streams — every line of
+--- its standard input a message, answered on its standard output as
+--- `answer` answers a route's request (the body alone: stdio has no
+--- header layer), a notification answered with nothing — until its input
+--- ends (an empty line ends it too: a message is never empty); answers
+--- empty text. Each answer is written whole before the next line is read.
+fn listen[tools = [], name = 'crow', instructions = '']
+    while true
+        line = input[]
+        if not line.ok
+            break
+        said = trim[line]
+        if len[said] eq 0
+            break
+        got = _answered[said, '', '', '', false, tools, name, instructions]
+        if len[got.body] gt 0
+            log[got.body]
+    return ''
+
+--- ── the package's own tests ───────────────────────────────────────────
+
+--- a tool the package's own tests describe and call
+fn _echo[words]
+    return 'echo `trim[words]`'
+
+--- a server's URL read, and one that is none refused; a request's params
+--- gain the _meta every request carries
+test a_server_is_its_endpoints_url[]
+    s = server['http://127.0.0.1:8000/mcp']
+    assert[str[s.url] eq 'http://127.0.0.1:8000/mcp']
+    assert[str[s.token] eq '']
+    t = server['https://example.com/mcp', token = 'abc']
+    assert[str[t.token] eq 'abc']
+    assert[not server['localhost:8000'].ok]
+    assert[server['ftp://x'].kind eq 'mcp']
+    bare = json[_with_meta['{}']]
+    assert[str[bare['_meta']['io.modelcontextprotocol/protocolVersion']] eq '2026-07-28']
+    full = json[_with_meta['{"name": "echo", "arguments": {"words": "hi"}}']]
+    assert[str[full.name] eq 'echo']
+    assert[str[full['_meta']['io.modelcontextprotocol/clientInfo'].name] eq 'crow']
+
+--- a response is read as its JSON, or as the last event of a stream
+--- that holds a response
+test a_message_is_read_from_json_or_from_a_stream[]
+    m = _message_of[200, 'application/json', '{"jsonrpc": "2.0", "id": 1, "result": {"resultType": "complete", "tools": []}}']
+    assert[len[m.result.tools] eq 0]
+    events = 'event: message\ndata: {"jsonrpc": "2.0", "method": "notifications/progress", "params": {}}\n\n: keep-alive\n\ndata: {"jsonrpc": "2.0", "id": 1, "result": {"resultType": "complete", "content": [{"type": "text", "text": "21"}]}}\n\n'
+    m2 = _message_of[200, 'text/event-stream', events]
+    assert[_content_text[m2.result] eq '21']
+    assert[not _message_of[200, 'text/event-stream', ': keep-alive\n\n'].ok]
+    assert[_message_of[502, 'text/plain', 'bad gateway'].reason eq 'the MCP server answered 502: bad gateway']
+    assert[_message_of[200, 'text/html', '<p>hi</p>'].reason eq 'the MCP server answered no JSON: <p>hi</p>']
+
+--- a tool is listed from its description, and called by name: its text,
+--- a failure marked an error, a name no tool has none
+test a_tool_is_listed_and_called[]
+    listed = json[_tool_listed[describe[_echo]]]
+    assert[str[listed.name] eq '_echo']
+    assert[str[listed.description] eq 'a tool the package\'s own tests describe and call']
+    assert[str[listed.inputSchema.properties.words.type] eq 'string']
+    assert[str[listed.inputSchema.required[0]] eq 'words']
+    called = json[_call_result[[_echo], '_echo', json['{"words": " hi "}']]]
+    assert[str[called.content[0].text] eq 'echo hi']
+    assert[str[called.isError] eq 'false']
+    missing = json[_call_result[[_echo], '_echo', json['{}']]]
+    assert[str[missing.isError] eq 'true']
+    assert[_call_result[[_echo], 'nothing', json['{}']] eq '']
+    assert[_error_text['1', -32601, 'Method not found: x'] eq '{"jsonrpc": "2.0", "id": 1, "error": {"code": -32601, "message": "Method not found: x"}}']
+
+--- a server started as a command is named by it; a URL and a command, or
+--- a token with a command, are refused; nothing named is none
+test a_server_is_a_command_or_an_endpoint[]
+    c = server[command = '/bin/cat']
+    assert[str[c.command] eq '/bin/cat']
+    assert[str[c.url] eq '']
+    assert[_command_of[c] eq '/bin/cat']
+    assert[_command_of[server['http://h/mcp']] eq '']
+    assert[not server['http://h/mcp', command = '/bin/cat'].ok]
+    assert[server[command = '/bin/cat', token = 't'].kind eq 'mcp']
+    assert[not server[].ok]
+
+--- a stand-in server for the package's tests: a shell loop answering each
+--- line by its method, the request's id read back into the answer
+fn _shell_server[]
+    return 'while read -r line; do id=${line#*\"id\":}; id=${id# }; id=${id%%,*}; case $line in *tools/list*) echo "{\"jsonrpc\": \"2.0\", \"id\": $id, \"result\": {\"tools\": [{\"name\": \"echo\", \"description\": \"says its words back\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"words\": {\"type\": \"string\"}}, \"required\": [\"words\"]}}]}}";; *tools/call*) w=${line#*\"words\":}; w=${w# }; w=${w#\"}; w=${w%%\"*}; echo "{\"jsonrpc\": \"2.0\", \"id\": $id, \"result\": {\"content\": [{\"type\": \"text\", \"text\": \"echo: $w\"}], \"isError\": false}}";; *) echo "{\"jsonrpc\": \"2.0\", \"id\": $id, \"error\": {\"code\": -32601, \"message\": \"Method not found\"}}";; esac; done'
+
+--- over stdio a request is one line and the response the line carrying
+--- its id: a process that echoes the request answers no result, one the
+--- shell does not find ends, a shell loop that answers is a server (its
+--- tools listed and called through the one client), and the ids count up
+--- on the process
+test a_message_goes_to_a_process_as_a_line[]
+    echoed = _sent_over_stdio['/bin/cat', 'tools/list', '{}']
+    assert[echoed.reason eq 'the MCP server answered no result']
+    gone = _sent_over_stdio['crow-no-such-mcp-server', 'tools/list', '{}']
+    assert[gone.reason eq 'cannot reach the MCP server crow-no-such-mcp-server: the process ended']
+    loop = _shell_server[]
+    listed = _sent_over_stdio[loop, 'tools/list', '{}']
+    assert[str[listed.tools[0].name] eq 'echo']
+    called = _sent_over_stdio[loop, 'tools/call', '{"name": "echo", "arguments": {"words": "hi"}}']
+    assert[_content_text[called] eq 'echo: hi']
+    other = _sent_over_stdio[loop, 'resources/list', '{}']
+    assert[other.reason eq 'the MCP server answered an error -32601: Method not found']
+    p = _process_of[loop]
+    a = _next_id[p]
+    assert[_next_id[p] eq a + 1]
+    s = server[command = loop]
+    assert[str[catalog[s][0].name] eq 'echo']
+    assert[tool[s, 'echo', map[words = 'there']] eq 'echo: there']
+    assert[discover[s].reason eq 'the MCP server answered an error -32601: Method not found']
+
+--- a message is answered the same over either transport: the headers
+--- checked where the transport mirrors them, not over stdio; a
+--- notification answered with nothing; a legacy initialize told the
+--- version spoken; a call applied
+test a_message_is_answered_over_either_transport[]
+    params = _with_meta['{}']
+    req = '{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": `params`}'
+    over_stdio = _answered[req, '', '', '', false, [_echo], 'crow', '']
+    assert[over_stdio.status eq 200]
+    assert[str[json[over_stdio.body].result.tools[0].name] eq '_echo']
+    over_http = _answered[req, '2026-07-28', 'tools/list', '', true, [_echo], 'crow', '']
+    assert[over_http.body eq over_stdio.body]
+    bare = _answered[req, '', '', '', true, [_echo], 'crow', '']
+    assert[bare.status eq 400]
+    assert[str[json[bare.body].error.code] eq '-32020']
+    quiet = _answered['{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {}}', '', '', '', false, [_echo], 'crow', '']
+    assert[quiet.status eq 202]
+    assert[len[quiet.body] eq 0]
+    legacy = _answered['{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}}', '', '', '', false, [_echo], 'crow', '']
+    assert[legacy.status eq 400]
+    assert[starts[str[json[legacy.body].error.message], 'initialize is the handshake of the revisions before 2026-07-28']]
+    meta = _meta[]
+    calling = '{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "_echo", "arguments": {"words": "hi"}, "_meta": `meta`}}'
+    applied = _answered[calling, '', '', '', false, [_echo], 'crow', '']
+    assert[str[json[applied.body].result.content[0].text] eq 'echo hi']
+    unknown = _answered[replace[calling, '_echo', 'nothing'], '', '', '', false, [_echo], 'crow', '']
+    assert[str[json[unknown.body].error.message] eq 'Unknown tool: nothing']

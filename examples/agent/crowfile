@@ -1,0 +1,3 @@
+name = 'agent'
+db = 'sqlite://agent.db'
+deps = map[llm = '../../packages/llm', mcp = '../../packages/mcp']

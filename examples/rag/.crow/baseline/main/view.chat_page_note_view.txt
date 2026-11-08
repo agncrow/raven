@@ -1,0 +1,6 @@
+view chat_page_note_view (chat/page.co)
+  composed on: page /
+  always:
+    stack[gap = 's']
+      h3[] '[`$1`] `$2.chunk.file`'
+      p[] $2.chunk.body

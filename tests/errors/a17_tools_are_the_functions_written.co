@@ -1,0 +1,10 @@
+--- tools = […] takes the functions themselves, written in the call: a text
+--- naming one, or a variable holding the list, is refused with the form
+use llm
+
+fn weather[city]
+    return 'sunny in `upper[city]`'
+
+m = llm.reach['openai://127.0.0.1:1/llama3.2']
+r = llm.chat[m, llm.ask['How warm is Lisbon?'], tools = ['weather']]
+log[r.ok]

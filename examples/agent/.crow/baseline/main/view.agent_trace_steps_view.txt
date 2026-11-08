@@ -1,0 +1,9 @@
+view agent_trace_steps_view (agent/trace.co)
+  composed on: page /, page /runs
+  reads: agent_trace_run_id, agent_trace_steps
+  when (agent_trace_run_id eq 0):
+    p[color = 'muted'] 'open a run to see its steps'
+  when (not (agent_trace_run_id eq 0)):
+    stack[gap = 's']
+      h2[] 'Run `agent_trace_run_id`'
+      table[key = 'step'] agent_trace_steps

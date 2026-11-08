@@ -1,0 +1,33 @@
+--- A package's function is the program's call of it: qualified, by an
+--- alias, handed as a value, inside an interpolation — typed by its use,
+--- a copy per signature, its options its defaults — and a value the
+--- program holds crosses as itself (no JSON text at the door). The
+--- conversation is built and read with no model, and a model's address
+--- answering nobody is the same value in both modes. (Crow's parity 267
+--- held these lines while llm was one of its standard modules, until
+--- 2026-11-07.)
+use llm
+use llm as l
+
+talk = llm.ask['What is the capital of Mongolia?']
+talk = l.asked[talk, 'And its population?']
+log[len[talk]]
+log[str[talk[1].text]]
+r = json['{"text": "let me check", "calls": [{"id": "c1", "name": "weather", "args": {"city": "Lisbon"}}], "usage": {"input": 3, "output": 4}, "stop": "tool"}']
+talk = llm.said[talk, r]
+talk = llm.told[talk, r.calls[0], '21°C']
+log[len[talk]]
+log[str[talk[2].role]]
+log[str[talk[3].id]]
+log[llm.asked[r, 'x'].reason]
+log[llm.said[talk, json['{"a": 1}']].reason]
+opened = llm.ask
+log[len[opened['hi']]]
+word = 'x'
+log['a conversation of `len[l.ask[word]]` turn']
+m = llm.reach['openai://127.0.0.1:9/self-model']
+log[str[m.provider]]
+log[llm.reach['ftp://x'].reason]
+got = llm.chat[m, talk, tokens = 5, system = 'brief']
+log[got.ok]
+log[got.kind]

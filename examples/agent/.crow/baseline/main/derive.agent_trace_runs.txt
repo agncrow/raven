@@ -1,0 +1,4 @@
+derive agent_trace_runs (agent/trace.co)
+  reads: nothing
+  tables: runs
+  read by: agent_trace_render, agent_trace_runs_view

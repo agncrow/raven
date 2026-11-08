@@ -1,0 +1,39 @@
+--- A process the program talks to is a socket of the standard library's
+--- layer (crow's spec, sys: `start`), and `mcp.server[command = …]` names
+--- an MCP server run over its standard streams (mcp's REFERENCE.md: the
+--- stdio transport): started at the first message and kept for the
+--- program's life, its lines read as the protocol's messages. The same in
+--- both modes: a process that echoes every line answers the request back,
+--- which is no result; a command the shell does not find ends before
+--- answering (and is started again at the next message); a shell loop
+--- that answers by method is a server, its tools listed and called with a
+--- map and with a parsed value; and a command beside a URL, a token with
+--- a command, and nothing named are refused. (tests/mcp.py runs a Crow
+--- client against a Crow program serving over stdio, in both modes; the
+--- sh loop stands in for a server here, so nothing is installed or
+--- reached.)
+use mcp
+
+cat = mcp.server[command = '/bin/cat']
+log[cat.command]
+log[cat.url]
+got = mcp.catalog[cat]
+log[got.ok]
+log[got.kind]
+log[got.reason]
+log[mcp.tool[cat, 'echo', map[words = 'hi']].reason]
+gone = mcp.server[command = 'crow-no-such-server-278']
+log[mcp.catalog[gone].reason]
+log[mcp.discover[gone].reason]
+loop = mcp.server[command = 'while read -r line; do id=${line#*\"id\":}; id=${id# }; id=${id%%,*}; case $line in *tools/list*) echo "{\"jsonrpc\": \"2.0\", \"id\": $id, \"result\": {\"tools\": [{\"name\": \"echo\", \"description\": \"says its words back\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"words\": {\"type\": \"string\"}}, \"required\": [\"words\"]}}]}}";; *tools/call*) w=${line#*\"words\":}; w=${w# }; w=${w#\"}; w=${w%%\"*}; echo "{\"jsonrpc\": \"2.0\", \"id\": $id, \"result\": {\"content\": [{\"type\": \"text\", \"text\": \"echo: $w\"}], \"isError\": false}}";; *) echo "{\"jsonrpc\": \"2.0\", \"id\": $id, \"error\": {\"code\": -32601, \"message\": \"Method not found\"}}";; esac; done']
+listed = mcp.catalog[loop]
+log[len[listed]]
+log[listed[0].name]
+log[listed[0].description]
+log[listed[0].inputSchema.required[0]]
+log[mcp.tool[loop, 'echo', map[words = 'hi there']]]
+log[mcp.tool[loop, 'echo', json['{"words": "from a parsed value"}']]]
+log[mcp.discover[loop].reason]
+log[mcp.server['http://127.0.0.1:1/mcp', command = '/bin/cat'].reason]
+log[mcp.server[command = '/bin/cat', token = 't'].reason]
+log[mcp.server[].reason]

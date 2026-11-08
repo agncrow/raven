@@ -1,0 +1,12 @@
+--- Ask the notes — raven's RAG example (crow's docs/rag-design.md). The
+--- markdown notes under docs/ are cut into chunks, embedded once and
+--- indexed; a question finds its chunks by two rankings — the vectors'
+--- and BM25's, fused by reciprocal rank — and the model answers from them,
+--- citing each one it used. The model and the embedder are reached by
+--- the environment's RAG_MODEL and RAG_EMBEDDER (Ollama's by default);
+--- the tests replay what a recording kept (crow test --fixtures).
+use web, ui
+use chat.page
+
+serve[3400]
+page['/', page.render]

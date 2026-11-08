@@ -1,0 +1,9 @@
+view agent_chat_answer_view (agent/chat.co)
+  composed on: page /
+  reads: agent_chat_answer, agent_chat_called
+  when (len[agent_chat_answer] eq 0):
+    p[color = 'muted'] 'ask about an order: its status, a customer's orders, a refund'
+  when (not (len[agent_chat_answer] eq 0)):
+    stack[gap = 's']
+      p[] agent_chat_answer
+      p[color = 'muted', size = 's'] 'tools called: `agent_chat_called`'

@@ -1,0 +1,3 @@
+reach agent/judge.co
+  network: request
+  process: env

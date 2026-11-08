@@ -1,0 +1,39 @@
+{
+  "answered": 0,
+  "columns": [
+    [
+      "id",
+      "str"
+    ],
+    [
+      "at",
+      "str"
+    ],
+    [
+      "question",
+      "str"
+    ],
+    [
+      "stop",
+      "str"
+    ],
+    [
+      "rounds",
+      "str"
+    ],
+    [
+      "input",
+      "str"
+    ],
+    [
+      "output",
+      "str"
+    ],
+    [
+      "ms",
+      "str"
+    ]
+  ],
+  "rows": [],
+  "sql": "SELECT id, at, question, stop, rounds, input, output, ms FROM runs ORDER BY id DESC"
+}

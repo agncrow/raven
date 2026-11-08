@@ -1,0 +1,12 @@
+--- inside a package, a helper's use of what the program handed is held to
+--- its kinds as the program's own calls are, and the refusal names the
+--- function the program called: chat's `system` reaches `len` two helpers
+--- down (`_chat_with`, then `_body_of`), and an int there is refused
+--- naming llm.chat at the program's line, as crow refused it while llm was
+--- one of its standard modules.
+use llm
+
+m = llm.reach['http://127.0.0.1:1/v1']
+talk = llm.ask['hello']
+r = llm.chat[m, talk, system = 5]
+log[r.ok]

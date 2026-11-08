@@ -1,0 +1,3 @@
+a18_a_tools_parameter_typed_by_nothing.co:12:1: in llm.chat: weather's parameter 'city' is handed a parsed value and read as nothing — read it in the body as what it is (upper[city] reads text, city + 0 a number, str[city] text), or call weather[…] once with a value of its kind
+  12 │ r = llm.chat[m, talk, tools = [weather]]
+     │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

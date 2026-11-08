@@ -1,0 +1,4 @@
+fact agent_trace_run_id (agent/trace.co)
+  type: int
+  written by: agent_chat_ask_agent, agent_trace_open_run
+  read by: agent_chat_render, agent_trace_render, agent_trace_steps, agent_trace_steps_view

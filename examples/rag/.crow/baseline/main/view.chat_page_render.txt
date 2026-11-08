@@ -1,0 +1,12 @@
+view chat_page_render (chat/page.co)
+  composed on: page /
+  reads: chat_page_question, chat_page_turns
+  always:
+    stack[gap = 'l', pad = 'l']
+      h1[] 'Ask the notes'
+      stack[gap = 'l']
+        for each[chat_page_turns]
+          @chat_page_turn_view[each[chat_page_turns]]
+      row[align = 'end', gap = 'm']
+        field[binds chat_page_question, type = 'text'] 'Question'
+        button[class = 'primary', click → chat_page_ask_model] 'Ask'

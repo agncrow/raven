@@ -1,0 +1,4 @@
+derive agent_trace_spent (agent/trace.co)
+  reads: nothing
+  tables: runs
+  read by: agent_trace_charts_view, agent_trace_render

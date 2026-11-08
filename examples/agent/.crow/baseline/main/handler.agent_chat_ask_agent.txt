@@ -1,0 +1,10 @@
+handler agent_chat_ask_agent (agent/chat.co)
+  wired: agent_chat_render button 'Ask'
+  when (len[trim[agent_chat_question]] eq 0):
+    effect notice 'ask something'
+  when (not (len[trim[agent_chat_question]] eq 0)) and (not v1.ok):
+    reads v1 = agent_support_run[trim[agent_chat_question]]
+    effect notice 'the agent stopped: `v1.reason`'
+  when (not (len[trim[agent_chat_question]] eq 0)) and v1.ok:
+    reads v1 = agent_support_run[trim[agent_chat_question]]
+    agent_chat_answer := v1.text · agent_chat_called := join[v1.tools, ', '] · agent_chat_question := '' · agent_trace_run_id := v1.id

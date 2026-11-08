@@ -1,0 +1,19 @@
+--- mcp without a network: a server named by its endpoint's URL, and one
+--- started as a command — here a shell loop answering by method, which is
+--- the whole stdio transport: one request a line on its input, the
+--- response the line on its output carrying the request's id. The client
+--- lists its tools and calls one; the book (docs/book/src/mcp.md) serves
+--- a Crow program's own functions as tools.
+use mcp
+
+s = mcp.server['https://tools.example.com/mcp', token = 'secret']
+log[s.url]
+log[s.token]
+bad = mcp.server['localhost:8000/mcp']
+log[bad.ok]
+loop = mcp.server[command = 'while read -r line; do id=${line#*\"id\":}; id=${id# }; id=${id%%,*}; case $line in *tools/list*) echo "{\"jsonrpc\": \"2.0\", \"id\": $id, \"result\": {\"tools\": [{\"name\": \"echo\", \"description\": \"says its words back\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"words\": {\"type\": \"string\"}}, \"required\": [\"words\"]}}]}}";; *tools/call*) w=${line#*\"words\":}; w=${w# }; w=${w#\"}; w=${w%%\"*}; echo "{\"jsonrpc\": \"2.0\", \"id\": $id, \"result\": {\"content\": [{\"type\": \"text\", \"text\": \"echo: $w\"}], \"isError\": false}}";; *) echo "{\"jsonrpc\": \"2.0\", \"id\": $id, \"error\": {\"code\": -32601, \"message\": \"Method not found\"}}";; esac; done']
+listed = mcp.catalog[loop]
+log[listed[0].name]
+log[listed[0].description]
+log[mcp.tool[loop, 'echo', map[words = 'hi there']]]
+log[mcp.discover[loop].reason]

@@ -1,0 +1,4 @@
+scenario agent_chat_an_empty_question_asks_nothing (agent/chat.co)
+  ran to its end
+  changed:
+    question =    

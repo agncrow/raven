@@ -1,0 +1,14 @@
+--- a tool's schema says what each parameter is: one nothing types — a
+--- function only ever handed a parsed value it shows in text — is refused
+--- with the fix, before the program runs
+use llm
+
+--- the current weather in a city
+fn weather[city]
+    return 'sunny in `city`'
+
+m = llm.reach['openai://127.0.0.1:1/llama3.2']
+talk = llm.ask['How warm is Lisbon?']
+r = llm.chat[m, talk, tools = [weather]]
+if r.ok and r.stop eq 'tool'
+    log[weather[r.calls[0].args.city]]

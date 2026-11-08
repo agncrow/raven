@@ -1,0 +1,16 @@
+{
+  "body": "{\"model\": \"nomic-embed-text\", \"input\": [\"how does a derivation stay fresh\"]}",
+  "kind": "request",
+  "method": "POST",
+  "reply": {
+    "body": "{\"object\": \"list\", \"data\": [{\"object\": \"embedding\", \"index\": 0, \"embedding\": [0.35355339059327373, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.7071067811865475, 0.0, 0.0, 0.0, 0.0, 0.0, 0.35355339059327373, 0.0, 0.0, 0.0, 0.0, 0.0, 0.35355339059327373, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.35355339059327373, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}], \"model\": \"nomic-embed-text\", \"usage\": {\"prompt_tokens\": 6, \"total_tokens\": 6}}",
+    "headers": {
+      "content-length": "559",
+      "content-type": "application/json",
+      "date": "Mon, 12 Oct 2026 06:55:15 GMT",
+      "server": "BaseHTTP/0.6 Python/3.9.6"
+    },
+    "status": 200
+  },
+  "url": "http://127.0.0.1:11434/v1/embeddings"
+}

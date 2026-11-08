@@ -1,0 +1,3 @@
+reach chat/retrieve.co
+  network: request
+  process: env
