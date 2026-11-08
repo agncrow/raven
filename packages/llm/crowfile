@@ -1,2 +1,2 @@
 name = 'llm'
-deps = map[mcp = '../mcp']
+deps = map[mcp = 'github.com/agncrow/raven/packages/mcp@v0.1.0']

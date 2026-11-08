@@ -15,8 +15,10 @@ the protocol, and the examples answer from recorded fixtures.
 | [`packages/llm`](packages/llm/REFERENCE.md) | a model as a connection: conversations, replies, tools as the functions themselves, a reply followed piece by piece, embeddings, and the agent loop `act` — gates, limits, compaction, skills, subagents, MCP servers' tools |
 | [`packages/mcp`](packages/mcp/REFERENCE.md) | the Model Context Protocol, revision 2026-07-28: a client of other programs' tools over Streamable HTTP and stdio, and a Crow program's functions served as tools, in a route or over its own standard streams |
 
-A program installs a package as any dependency (llm brings mcp with it)
-and calls it qualified:
+A program installs a package as any dependency (llm brings mcp with it, at
+the same tag) and calls it qualified. Raven needs crow 0.9.0 or later: on an
+earlier crow, `llm` and `mcp` are standard modules, and a package of either
+name is refused beside them as ambiguous.
 
 ```
 deps = map[llm = 'github.com/agncrow/raven/packages/llm@v0.1.0']
