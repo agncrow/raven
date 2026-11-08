@@ -2,7 +2,7 @@
 
 The client for language-model APIs, the first piece of Crow's LLM work
 (Vijay, 2026-10-11: "start with what you recommended"): the clients and
-SDKs first, the model itself next (docs/gpt-design.md), the serving
+SDKs first, the model itself next (Pie's docs/gpt-design.md), the serving
 software later. This note is the design; the spec's section 13 (`### llm`)
 is the contract, and `src/modules/llm.co` the body.
 
